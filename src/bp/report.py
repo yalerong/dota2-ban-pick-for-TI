@@ -31,7 +31,7 @@ def _roster_section(fr: Frames, P: TeamProfile, top_n: int = 6) -> list[str]:
         for r in s.head(top_n).itertuples():
             tag = " ★" if r.signature >= 0.4 else ""
             L.append(f"  - {fr.hero(r.hero_id)}: {int(r.games)}g {int(r.wins)}w, smoothed {100*r.wr:.0f}%, lift {r.relative_win_lift:+.2f}, "
-                     f"ban-pressure {100*r.targeted_ban_pressure:.0f}%, sig {r.signature:.2f}{tag} — {_ids(r.match_ids)}")
+                     f"banned vs us {100*r.ban_rate_vs_team:.0f}% (meta {100*r.meta_ban_rate:.0f}%), sig {r.signature:.2f} [{r.tag}]{tag} — {_ids(r.match_ids)}")
     return L + [""]
 
 
@@ -63,11 +63,13 @@ def _pressure_section(fr: Frames, us: TeamProfile, them: TeamProfile) -> list[st
     L = ["## Targeted bans", ""]
     L.append(f"**Opponents ban against {them.name}** (phase-1 share of their games):")
     for r in them.ban_pressure.head(8).itertuples():
-        L.append(f"- {fr.hero(r.hero_id)}: {int(r.phase0)}/{int(r.games)} phase-1 ({100*r.phase0_rate:.0f}%), {int(r.bans)} total — {_ids(r.match_ids)}")
+        L.append(f"- {fr.hero(r.hero_id)}: {int(r.phase0)}/{int(r.games)} phase-1 ({100*r.phase0_rate:.0f}% vs meta {100*r.global_phase0_rate:.0f}%, "
+                 f"targeted {100*r.targeted_lift:+.0f}pt), {int(r.bans)} total — {_ids(r.match_ids)}")
     L.append("")
     L.append(f"**Opponents ban against {us.name}**:")
     for r in us.ban_pressure.head(8).itertuples():
-        L.append(f"- {fr.hero(r.hero_id)}: {int(r.phase0)}/{int(r.games)} phase-1 ({100*r.phase0_rate:.0f}%), {int(r.bans)} total")
+        L.append(f"- {fr.hero(r.hero_id)}: {int(r.phase0)}/{int(r.games)} phase-1 ({100*r.phase0_rate:.0f}% vs meta {100*r.global_phase0_rate:.0f}%, "
+                 f"targeted {100*r.targeted_lift:+.0f}pt), {int(r.bans)} total")
     L.append("")
     h2h = team_matches(fr, us.team_id)
     h2h = h2h[h2h.opp == them.team_id]
@@ -81,10 +83,10 @@ def _lists_section(fr: Frames, us: TeamProfile, them: TeamProfile) -> list[str]:
     L = ["## Protect / steal / release", ""]
     our = us.stats[us.stats.games >= 3].sort_values("signature", ascending=False)
     their = them.stats[them.stats.games >= 3].sort_values("signature", ascending=False)
-    bp_us = us.ban_pressure.set_index("hero_id").phase0_rate if len(us.ban_pressure) else pd.Series(dtype=float)
+    bp_us = us.ban_pressure.set_index("hero_id").targeted_lift.clip(lower=0) if len(us.ban_pressure) else pd.Series(dtype=float)
     protect = our.assign(bp=bp_us.reindex(our.hero_id).fillna(0).values).sort_values(["bp", "signature"], ascending=False).head(6)
     L.append("**Protect (our signatures that get banned)**: " + ", ".join(
-        f"{fr.hero(r.hero_id)} [{fr.player(r.account_id)}] sig {r.signature:.2f}, banned {100*r.bp:.0f}%" for r in protect.itertuples()))
+        f"{fr.hero(r.hero_id)} [{fr.player(r.account_id)}] sig {r.signature:.2f}, targeted {100*r.bp:+.0f}pt" for r in protect.itertuples()))
     shared = their.merge(our[["hero_id", "account_id", "signature"]], on="hero_id", suffixes=("_them", "_us"))
     steal = shared.sort_values("signature_them", ascending=False).head(6)
     L.append("**Steal (their signatures our roster also plays)**: " + (", ".join(

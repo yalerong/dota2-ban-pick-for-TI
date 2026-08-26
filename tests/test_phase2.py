@@ -102,9 +102,10 @@ def test_profiles_and_signatures(league):
     # ban pressure: hero 30 is first-banned against A almost always
     bp = ban_pressure(fr, TEAM_A)
     assert int(bp.iloc[0].hero_id) == FIRST_BAN_VS_A and bp.iloc[0].phase0_rate > 0.35
-    # ban pressure flows into the signature components
-    h30 = A.stats[A.stats.hero_id == FIRST_BAN_VS_A]
-    assert len(h30) == 0 or h30.iloc[0].targeted_ban_pressure > 0.35
+    # every match in the league is A vs B, so the ban rate vs A equals the patch-wide rate: nothing is "targeted"
+    assert bp.iloc[0].global_phase0_rate == pytest.approx(bp.iloc[0].phase0_rate)
+    assert bp.iloc[0].targeted_lift == pytest.approx(0.0)
+    assert (A.stats.targeted_ban_pressure.abs() < 1e-9).all() and A.stats.tag.notna().all()
 
 
 def test_candidates_and_edges(league):

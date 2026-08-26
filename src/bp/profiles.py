@@ -185,6 +185,11 @@ def player_hero_stats(fr: Frames) -> pd.DataFrame:
     g = g.join(p, on="account_id")
     g["pick_frequency"] = g.games_w / g.p_games_w
     g["relative_win_lift"] = g.wr - g.p_wr
+    # how often the field picks this hero at the same position (meta popularity), and the player's excess over it
+    pos_w = r.groupby("pos").w.sum()
+    hero_pos_w = r.groupby(["hero_id", "pos"]).w.sum()
+    g["meta_pick_freq"] = [float(hero_pos_w.get((h, p), 0.0) / max(pos_w.get(p, 1e-9), 1e-9)) for h, p in zip(g.hero_id, g.pos)]
+    g["pick_lift"] = g.pick_frequency - g.meta_pick_freq
     g["recent_usage"] = ((fr.as_of - g.last_played) <= fr.cfg["decay"]["recent_days"] * DAY).astype(float)
     g["match_ids"] = [tuple(x) for x in r.groupby(["account_id", "hero_id"]).match_id.apply(
         lambda s: sorted(s, reverse=True)[:5]).reindex(pd.MultiIndex.from_frame(g[["account_id", "hero_id"]])).values]
@@ -195,8 +200,15 @@ def signature_scores(stats: pd.DataFrame, fr: Frames, ban_pressure: pd.DataFrame
     """PLAN's six-component signature score; weights from config."""
     w = fr.cfg["signature"]
     s = stats.copy()
-    bp = ban_pressure.set_index("hero_id").phase0_rate if ban_pressure is not None and len(ban_pressure) else pd.Series(dtype=float)
-    s["targeted_ban_pressure"] = bp.reindex(s.hero_id).fillna(0).values
+    if ban_pressure is not None and len(ban_pressure):
+        bpi = ban_pressure.set_index("hero_id")
+        s["ban_rate_vs_team"] = bpi.phase0_rate.reindex(s.hero_id).fillna(0).values
+        s["meta_ban_rate"] = bpi.global_phase0_rate.reindex(s.hero_id).fillna(0).values
+    else:
+        s["ban_rate_vs_team"] = 0.0
+        s["meta_ban_rate"] = 0.0
+    # only the excess over the patch-wide ban rate counts as *targeted*; a meta hero banned against everyone scores 0 here
+    s["targeted_ban_pressure"] = (s.ban_rate_vs_team - s.meta_ban_rate).clip(lower=0)
     s["role_adjusted_performance"] = 1.0
     s["tournament_readiness"] = 1.0
     s["signature"] = (w["pick_frequency"] * s.pick_frequency + w["relative_win_lift"] * s.relative_win_lift
@@ -204,7 +216,21 @@ def signature_scores(stats: pd.DataFrame, fr: Frames, ban_pressure: pd.DataFrame
                       + w["role_adjusted_performance"] * 0 + w["tournament_readiness"] * 0)
     # sample-size shrink: tiny samples cannot produce big scores
     s["signature"] *= s.games_w / (s.games_w + 2)
+    s["tag"] = [classify(r) for r in s.itertuples()]
     return s.sort_values("signature", ascending=False)
+
+
+def classify(r) -> str:
+    """PLAN classes: signature (played far above the field's rate and at/above own baseline), meta (hot on the patch),
+    targeted (banned against this team well above the meta rate). Multiple tags joined by '+'."""
+    tags = []
+    if r.games >= 3 and r.pick_frequency >= 2 * max(r.meta_pick_freq, 0.01) and r.relative_win_lift >= -0.02:
+        tags.append("signature")
+    if r.meta_ban_rate >= 0.15 or r.meta_pick_freq >= 0.10:
+        tags.append("meta")
+    if r.targeted_ban_pressure >= 0.10:
+        tags.append("targeted")
+    return "+".join(tags) or "-"
 
 
 # ---------------------------------------------------------------- team helpers
@@ -250,7 +276,15 @@ def ban_pressure(fr: Frames, team_id: int) -> pd.DataFrame:
     g["rate"] = g.bans_w / max(games_w, 1e-9)
     g["phase0_rate"] = g.phase0_w / max(games_w, 1e-9)
     g["games"] = games
-    return g.sort_values("phase0_w", ascending=False)
+    # patch-wide ban rates (all matches in the frame) -> what a hero gets banned regardless of opponent
+    allb = fr.events[fr.events.is_pick == 0]
+    all_games_w = fr.events.drop_duplicates("match_id").w.sum()
+    gp0 = allb[allb.phase == 0].groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+    gall = allb.groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+    g["global_phase0_rate"] = gp0.reindex(g.hero_id).fillna(0).values
+    g["global_rate"] = gall.reindex(g.hero_id).fillna(0).values
+    g["targeted_lift"] = g.phase0_rate - g.global_phase0_rate
+    return g.sort_values("targeted_lift", ascending=False)
 
 
 def own_bans(fr: Frames, team_id: int) -> pd.DataFrame:
