@@ -113,13 +113,14 @@ def load_frames(con: sqlite3.Connection, as_of: int | None = None, patch: str | 
         where.append("start_time < ?"); args.append(as_of)
     if patch:
         where.append("patch = ?"); args.append(patch)
-    m = pd.read_sql_query(f"SELECT match_id, patch, start_time, radiant_team_id, dire_team_id, radiant_win, league_name "
-                          f"FROM matches WHERE {' AND '.join(where)}", con, params=args)
-    ids = tuple(m.match_id.tolist()) or (-1,)
-    ev = pd.read_sql_query(f"SELECT match_id, order_no, team_side, is_pick, hero_id, phase FROM draft_events "
-                           f"WHERE match_id IN ({','.join('?' * len(ids))})", con, params=ids)
-    ro = pd.read_sql_query(f"SELECT match_id, team_id, account_id, side, hero_id, lane_role, gpm FROM roster_snapshots "
-                           f"WHERE match_id IN ({','.join('?' * len(ids))})", con, params=ids)
+    cond = " AND ".join(f"m.{w}" if w[0].isalpha() else w for w in where)
+    m = pd.read_sql_query(f"SELECT m.match_id, m.patch, m.start_time, m.radiant_team_id, m.dire_team_id, m.radiant_win, "
+                          f"m.league_name FROM matches m WHERE {cond}", con, params=args)
+    # join instead of IN (...) so a full-patch window (>7k ids) never hits SQLite's bound-variable limit
+    ev = pd.read_sql_query(f"SELECT d.match_id, d.order_no, d.team_side, d.is_pick, d.hero_id, d.phase FROM draft_events d "
+                           f"JOIN matches m ON m.match_id = d.match_id WHERE {cond}", con, params=args)
+    ro = pd.read_sql_query(f"SELECT r.match_id, r.team_id, r.account_id, r.side, r.hero_id, r.lane_role, r.gpm "
+                           f"FROM roster_snapshots r JOIN matches m ON m.match_id = r.match_id WHERE {cond}", con, params=args)
     heroes = {r[0]: r[1] for r in con.execute("SELECT hero_id, localized_name FROM heroes")}
     import json as _json
     roles = {r[0]: set(_json.loads(r[1] or "[]")) for r in con.execute("SELECT hero_id, roles FROM heroes")}
@@ -162,9 +163,9 @@ def experience_weight(start_time, patches, as_of: int, current_patch: str | None
 # ---------------------------------------------------------------- P2-01 player x hero
 def hero_prior(fr: Frames) -> pd.Series:
     """Hero-level smoothed pro win rate (the Beta prior for player x hero)."""
-    g = fr.roster.groupby("hero_id").agg(gw=("w", "sum"), ww=("w", lambda s: 0))  # placeholder cols
+    gw = fr.roster.groupby("hero_id").w.sum()
     ww = fr.roster.assign(ww=fr.roster.w * fr.roster.won).groupby("hero_id").ww.sum()
-    return ((ww + 1) / (g.gw + 2)).rename("prior")
+    return ((ww + 1) / (gw + 2)).rename("prior")
 
 
 def player_hero_stats(fr: Frames) -> pd.DataFrame:
