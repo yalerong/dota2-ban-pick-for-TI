@@ -145,3 +145,29 @@ def test_as_of_excludes_future_and_report_builds(league):
     md = build_report(fr, A, B, load_format(league, "7.41"), "7.41", "testver")
     assert "## Rosters" in md and "## Targeted bans" in md and "## Opening recommendations" in md
     assert "Hero30" in md and "testver" in md
+
+
+def test_context_terms(league):
+    from bp.context import build_context
+    fr = load_frames(league, patch="7.41")
+    ctx = build_context(fr)
+    # team A wins 2/3 of games; its signature heroes counter B's and synergize with each other
+    eff, det = ctx.counter_vs(31, [41, 42])
+    assert eff > 0 and all(n >= 5 for _, _, n in det)
+    assert ctx.counter[(41, 31)][0] == pytest.approx(-ctx.counter[(31, 41)][0], abs=0.05)
+    syn, _ = ctx.synergy_with(31, [32, 33])
+    assert syn > 0
+    # unseen pair is exactly zero and has no samples
+    assert ctx.counter.get((31, 125), (0.0, 0)) == (0.0, 0)
+    # gap: with no roles data every hero fills nothing
+    assert ctx.gap_fill(31, [32])[0] == 0.0
+    # context changes the pick ranking once picks exist and can be switched off
+    stats = player_hero_stats(fr)
+    A, B = build_profile(fr, TEAM_A, stats), build_profile(fr, TEAM_B, stats)
+    st = DraftState(load_format(league, "7.41"), frozenset(fr.heroes))
+    for h in (60, 61, 62, 63, 64, 65, 66, 70):
+        st.apply(h)
+    on = candidates(fr, st, A, B, k=5)
+    off = candidates(fr, st, A, B, k=5, context=False)
+    assert "counter" in on[0].components and "counter" not in off[0].components
+    assert on[0].samples == off[0].samples  # evidence loop must not clobber the sample count

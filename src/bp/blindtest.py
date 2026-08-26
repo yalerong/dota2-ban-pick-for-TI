@@ -23,7 +23,8 @@ def _global_baseline(fr: Frames) -> dict:
 
 
 def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, until: int | None = None,
-               patch: str | None = None, league: int | None = None, max_matches: int = 150, ks=(1, 3, 5)) -> dict:
+               patch: str | None = None, league: int | None = None, max_matches: int = 150, ks=(1, 3, 5),
+               context: bool = True) -> dict:
     fr = load_frames(snap, as_of=as_of, patch=patch)
     assert int(fr.matches.start_time.max()) < as_of, "snapshot leaks matches at/after as_of"
     fmt_patch = patch or fr.matches.patch.mode().iloc[0]
@@ -70,7 +71,7 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
                 break
             key = (int(r.phase), int(r.is_pick))
             actual = int(r.hero_id)
-            cands = candidates(fr, st, P1, P2, k=kmax)
+            cands = candidates(fr, st, P1, P2, k=kmax, context=context)
             ranked = [c.hero_id for c in cands]
             legal = st.legal()
             base = [h for h, _ in baseline[key].most_common() if h in legal][:kmax]
@@ -89,7 +90,7 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
         return {f"top{k}": (sum(hits[which][kk][k] for kk in keys) / n if n else None) for k in ks} | {"n": n}
 
     all_keys = list(steps)
-    res = {"as_of": as_of, "patch": fmt_patch, "test_matches": int(len(tests)), "steps": sum(steps.values()),
+    res = {"as_of": as_of, "patch": fmt_patch, "context": context, "test_matches": int(len(tests)), "steps": sum(steps.values()),
            "overall": {w: agg(w, all_keys) for w in ("model", "baseline")},
            "bans": {w: agg(w, [k for k in all_keys if k[1] == 0]) for w in ("model", "baseline")},
            "picks": {w: agg(w, [k for k in all_keys if k[1] == 1]) for w in ("model", "baseline")},
@@ -105,7 +106,7 @@ def to_markdown(res: dict, snapshot_version: str | None) -> str:
                                                     for k in (1, 3, 5) if m.get(f'top{k}') is not None) + " |")
     L = [f"# Blind-test baseline", "",
          f"snapshot as_of {res['as_of']} (data_version {snapshot_version or '?'}), patch {res['patch']}, "
-         f"{res['test_matches']} later real matches, {res['steps']} draft steps.", "",
+         f"{res['test_matches']} later real matches, {res['steps']} draft steps, context terms {'ON' if res.get('context', True) else 'OFF'}.", "",
          "Model = linear evidence score (config/scoring.yaml); baseline = global meta frequency among legal heroes. "
          "Numbers are hit rates of the actual pro action within the model's Top-k (model / baseline).", "",
          "| slice | steps | top1 | top3 | top5 |", "|---|---|---|---|---|",

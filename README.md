@@ -39,6 +39,8 @@ bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7
 ```
 
 All scores are linear combinations of explainable statistics; weights live in `config/scoring.yaml`.
+Draft-context terms (`context.py`): Beta-smoothed counter matrix (hero vs enemy picks so far), synergy matrix (with own picks),
+and role-gap fill from dotaconstants tags. `bp blindtest --no-context` runs the ablation.
 Every number in a report carries up to 5 match ids so it can be verified on OpenDota.
 
 ## Layout
@@ -56,6 +58,7 @@ src/bp/
   profiles.py      P2-01..05: player x hero stats (Beta-smoothed, time-decayed), signature score, ban pressure,
                    team hero/phase habits, pair synergy, opponent response edges; positions = lane_role + GPM
   recommend.py     P2-07: candidate pick/ban scoring with evidence + predicted response
+  context.py       counter / synergy / lineup-gap terms fed into recommend (unseen pair == 0)
   report.py        P2-09: Markdown scouting report
   draft_state.py   P2-06: Captain's Mode state machine (format-parameterized)
   blindtest.py     P2-10: replay real drafts after a snapshot's as_of, Top-k hit rate vs meta-frequency baseline

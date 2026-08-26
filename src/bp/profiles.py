@@ -31,6 +31,15 @@ class Frames:
     patch_rank: dict[str, int]
     as_of: int
     cfg: dict = field(default_factory=dict)
+    roles: dict = field(default_factory=dict)
+    _ctx: object = field(default=None, repr=False)
+
+    def context(self):
+        """Lazily built draft-context matrices (counter / synergy / role gaps)."""
+        if self._ctx is None:
+            from .context import build_context
+            self._ctx = build_context(self)
+        return self._ctx
 
     def hero(self, hid: int) -> str:
         return self.heroes.get(int(hid), f"hero_{hid}")
@@ -112,6 +121,8 @@ def load_frames(con: sqlite3.Connection, as_of: int | None = None, patch: str | 
     ro = pd.read_sql_query(f"SELECT match_id, team_id, account_id, side, hero_id, lane_role, gpm FROM roster_snapshots "
                            f"WHERE match_id IN ({','.join('?' * len(ids))})", con, params=ids)
     heroes = {r[0]: r[1] for r in con.execute("SELECT hero_id, localized_name FROM heroes")}
+    import json as _json
+    roles = {r[0]: set(_json.loads(r[1] or "[]")) for r in con.execute("SELECT hero_id, roles FROM heroes")}
     players = {r[0]: r[1] for r in con.execute("SELECT account_id, name FROM players")}
     teams = {r[0]: r[1] for r in con.execute("SELECT team_id, name FROM teams")}
     patch_rank = {r[0]: i for i, r in enumerate(con.execute("SELECT name FROM patches ORDER BY release_time"))}
@@ -134,7 +145,7 @@ def load_frames(con: sqlite3.Connection, as_of: int | None = None, patch: str | 
     ro["w"] = experience_weight(ro.start_time, ro.patch, as_of, patch, patch_rank, cfg)
     ev["start_time"] = mi.start_time.reindex(ev.match_id).values
     ev["w"] = experience_weight(ev.start_time, mi.patch.reindex(ev.match_id).values, as_of, patch, patch_rank, cfg)
-    return Frames(m, ev, ro, heroes, players, teams, patch_rank, as_of, cfg)
+    return Frames(m, ev, ro, heroes, players, teams, patch_rank, as_of, cfg, roles)
 
 
 def experience_weight(start_time, patches, as_of: int, current_patch: str | None, patch_rank: dict, cfg: dict):

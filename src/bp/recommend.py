@@ -32,7 +32,8 @@ def _player_line(fr: Frames, row: pd.Series) -> str:
             f"{int(row.wins)} wins (smoothed {_fmt_pct(row.wr)}, lift {row.relative_win_lift:+.2f})")
 
 
-def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile, k: int | None = None) -> list[Candidate]:
+def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile, k: int | None = None,
+               context: bool = True) -> list[Candidate]:
     """Score every legal hero for the next action from `us` perspective (state.team 0 must be `us`'s side).
 
     The caller re-bases the state so that team 0 == the team we score for.
@@ -51,6 +52,10 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
     my_hs = me.hero_stats.set_index("hero_id") if len(me.hero_stats) else None
     opp_hs = opp.hero_stats.set_index("hero_id") if len(opp.hero_stats) else None
     my_bans = me.own_bans.set_index("hero_id") if len(me.own_bans) else None
+    cw = cfg.get("context", {}) if context else {}
+    ctx = fr.context() if context else None
+    my_picks, their_picks = state.picks(acting), state.picks(1 - acting)
+    weights = {**w, "counter": cw.get("counter", 0), "synergy": cw.get("synergy", 0), "gap": cw.get("gap", 0)}
     out: list[Candidate] = []
     for h in state.legal():
         comps: dict[str, float] = {}
@@ -91,7 +96,24 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
             comps["our_ban_habit"] = float(ob.rate) if ob is not None else 0.0
             if ob is not None:
                 ev.append(f"we banned {fr.hero(h)} {int(ob.bans)}x before")
-        score = sum(w.get(c, 0) * v for c, v in comps.items())
+        if ctx is not None and (my_picks or their_picks):
+            # pick: h should counter their picks, fit our picks, fill our gaps.
+            # ban: deny what would counter our picks / fit their picks / fill their gaps.
+            vs, with_, gaps_of = (their_picks, my_picks, my_picks) if is_pick else (my_picks, their_picks, their_picks)
+            c_eff, c_det = ctx.counter_vs(h, vs)
+            s_eff, s_det = ctx.synergy_with(h, with_)
+            g_eff, fills = ctx.gap_fill(h, gaps_of)
+            comps["counter"], comps["synergy"], comps["gap"] = c_eff, s_eff, g_eff
+            who_vs, who_with = ("their", "our") if is_pick else ("our", "their")
+            for o, e, nn in c_det:
+                if nn >= 3 and abs(e) >= 0.03:
+                    ev.append(f"{'counters' if e > 0 else 'loses to'} {who_vs} {fr.hero(o)} ({e:+.2f} WR, {nn} games)")
+            for m, e, nn in s_det:
+                if nn >= 3 and abs(e) >= 0.03:
+                    ev.append(f"{'synergy' if e > 0 else 'anti-synergy'} with {who_with} {fr.hero(m)} ({e:+.2f} WR, {nn} games)")
+            if fills:
+                ev.append(f"fills {who_with} missing role(s): {', '.join(fills)}")
+        score = sum(weights.get(c, 0) * v for c, v in comps.items())
         conf = n / (n + cfg["evidence"]["confidence_k"])
         out.append(Candidate(h, fr.hero(h), "pick" if is_pick else "ban", score, conf, n, ev,
                              sorted(set(int(m) for m in mids), reverse=True)[:6], comps,
