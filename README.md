@@ -2,7 +2,7 @@
 
 Captain's Mode BP scouting for pro/semi-pro teams. Design: `PLAN.md`; executable task list: `docs/TASKS-phase1-2.md`.
 
-Current state: **Phase 1 (data foundation)** — OpenDota sync, normalized SQLite store, data-inferred draft formats, quality checks, as-of snapshots with a content-hash `data_version`.
+Current state: **Phase 1 (data foundation) + Phase 2 (scouting MVP)** — OpenDota sync, normalized SQLite store, data-inferred draft formats, quality checks, as-of snapshots with a content-hash `data_version`; player/team profiles, signature scores, targeted-ban pressure, draft habits, opponent response edges, evidence-backed Pick/Ban candidates, Markdown scouting report, interactive draft board, blind-test baseline.
 
 ## Setup
 
@@ -28,6 +28,19 @@ bp update --since 2026-03-24 --limit 1500   # index+details+normalize+formats+ch
 
 `python -m bp ...` works without installing (`PYTHONPATH=src`).
 
+## Scouting (Phase 2)
+
+```bash
+bp teams --q spirit                                   # resolve team ids / names
+bp report --us "Team Spirit" --them "Team Liquid"     # -> reports/<us>-vs-<them>-<patch>.md
+bp draft  --us "Team Spirit" --them "Team Liquid" --first them   # interactive board; hero names, undo, state, quit
+bp --db data/snapshots/snapshot_20260801_<hash>.sqlite report --us ... --them ...   # as-of analysis on a frozen snapshot
+bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --out docs/baseline.md
+```
+
+All scores are linear combinations of explainable statistics; weights live in `config/scoring.yaml`.
+Every number in a report carries up to 5 match ids so it can be verified on OpenDota.
+
 ## Layout
 
 ```
@@ -40,6 +53,13 @@ src/bp/
   quality.py       hard/soft flags (see HARD/SOFT)
   export.py        as-of snapshot + data_version
   db.py            schema
+  profiles.py      P2-01..05: player x hero stats (Beta-smoothed, time-decayed), signature score, ban pressure,
+                   team hero/phase habits, pair synergy, opponent response edges; positions = lane_role + GPM
+  recommend.py     P2-07: candidate pick/ban scoring with evidence + predicted response
+  report.py        P2-09: Markdown scouting report
+  draft_state.py   P2-06: Captain's Mode state machine (format-parameterized)
+  blindtest.py     P2-10: replay real drafts after a snapshot's as_of, Top-k hit rate vs meta-frequency baseline
+scripts/backfill.py  multi-day OpenDota backfill driver
 ```
 
 ## Notes

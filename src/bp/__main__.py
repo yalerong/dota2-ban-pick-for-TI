@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .config import CONFIG
 from .db import connect, TABLES
@@ -21,29 +22,34 @@ def _out(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
+def _con(a):
+    return connect(Path(a.db)) if getattr(a, "db", None) else connect()
+
+
+# ---------------------------------------------------------------- phase 1
 def cmd_constants(a):
     from .constants import load_constants
-    _out(load_constants(connect(), offline=a.offline))
+    _out(load_constants(_con(a), offline=a.offline))
 
 
 def cmd_sync_index(a):
     from .sync import sync_index
-    _out(sync_index(OpenDota(), connect(), since_ts=_ts(a.since), max_pages=a.max_pages, full=a.full))
+    _out(sync_index(OpenDota(), _con(a), since_ts=_ts(a.since), max_pages=a.max_pages, full=a.full))
 
 
 def cmd_sync_matches(a):
     from .sync import sync_matches
-    _out(sync_matches(OpenDota(), connect(), limit=a.limit, since_ts=_ts(a.since)))
+    _out(sync_matches(OpenDota(), _con(a), limit=a.limit, since_ts=_ts(a.since)))
 
 
 def cmd_normalize(a):
     from .normalize import normalize_all
-    _out(normalize_all(connect(), OpenDota(offline=True), rebuild=a.rebuild))
+    _out(normalize_all(_con(a), OpenDota(offline=True), rebuild=a.rebuild))
 
 
 def cmd_formats(a):
     from .draft_formats import infer_formats, describe, load_format
-    con = connect()
+    con = _con(a)
     res = infer_formats(con, min_support=a.min_support)
     for r in res:
         sig = load_format(con, r["patch"]) if r["trusted"] else None
@@ -53,21 +59,20 @@ def cmd_formats(a):
 
 def cmd_check(a):
     from .quality import run_checks
-    _out(run_checks(connect()))
+    _out(run_checks(_con(a)))
 
 
 def cmd_export(a):
     from .export import export_snapshot
-    _out(export_snapshot(connect(), datetime.fromisoformat(a.as_of)))
+    _out(export_snapshot(_con(a), datetime.fromisoformat(a.as_of)))
 
 
 def cmd_update(a):
-    """Incremental: index -> details -> normalize -> formats -> check."""
     from .sync import sync_index, sync_matches
     from .normalize import normalize_all
     from .draft_formats import infer_formats
     from .quality import run_checks
-    con, client = connect(), OpenDota()
+    con, client = _con(a), OpenDota()
     out = {"index": sync_index(client, con, since_ts=_ts(a.since))}
     out["matches"] = sync_matches(client, con, limit=a.limit, since_ts=_ts(a.since))
     out["normalize"] = normalize_all(con, client)
@@ -77,8 +82,8 @@ def cmd_update(a):
 
 
 def cmd_status(a):
-    con = connect()
-    out = {"db": str(CONFIG.db_path), "budget_left_today": OpenDota().budget_left()}
+    con = _con(a)
+    out = {"db": str(CONFIG.db_path if not a.db else a.db), "budget_left_today": OpenDota().budget_left()}
     for t in TABLES:
         out[t] = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
     out["detail_status"] = {r[0] or "pending": r[1] for r in
@@ -92,9 +97,113 @@ def cmd_status(a):
     _out(out)
 
 
+# ---------------------------------------------------------------- phase 2
+def _frames_and_profiles(a):
+    from .profiles import load_frames, build_profile, player_hero_stats
+    con = _con(a)
+    fr = load_frames(con, as_of=_ts(getattr(a, "as_of", None)), patch=a.patch)
+    us, them = fr.team_id(a.us), fr.team_id(a.them)
+    if us is None or them is None:
+        sys.exit(f"team not found: us={a.us}->{us} them={a.them}->{them} (try `bp teams --q NAME`)")
+    stats = player_hero_stats(fr)
+    return con, fr, build_profile(fr, us, stats), build_profile(fr, them, stats)
+
+
+def _fmt(con, fr, patch):
+    from .draft_formats import load_format
+    p = patch or (fr.matches.patch.mode().iloc[0] if len(fr.matches) else None)
+    return load_format(con, p) if p else None, p
+
+
+def _data_version(con):
+    r = con.execute("SELECT value FROM meta WHERE key='data_version'").fetchone()
+    return r[0] if r else None
+
+
+def cmd_teams(a):
+    con = _con(a)
+    q = f"%{a.q.lower()}%" if a.q else "%"
+    rows = con.execute("""SELECT t.team_id, t.name, COUNT(m.match_id) games, MAX(m.start_time) last
+                          FROM teams t JOIN matches m ON t.team_id IN (m.radiant_team_id, m.dire_team_id)
+                          WHERE LOWER(t.name) LIKE ? AND m.excluded=0 GROUP BY 1 ORDER BY games DESC LIMIT ?""", (q, a.limit)).fetchall()
+    for r in rows:
+        print(f"{r[0]:>10}  {r[1]:<30} {r[2]:>4} games  last {datetime.fromtimestamp(r[3], timezone.utc).date()}")
+
+
+def cmd_report(a):
+    from .report import build_report
+    con, fr, us, them = _frames_and_profiles(a)
+    fmt, patch = _fmt(con, fr, a.patch)
+    md = build_report(fr, us, them, fmt, patch, _data_version(con))
+    out = Path(a.out) if a.out else CONFIG.root / "reports" / f"{us.name}-vs-{them.name}-{patch}.md".replace("/", "_").replace(" ", "_")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md, encoding="utf-8")
+    print(md if a.stdout else f"wrote {out}")
+
+
+def cmd_draft(a):
+    from .draft_state import DraftState
+    from .recommend import candidates, format_candidates
+    con, fr, us, them = _frames_and_profiles(a)
+    fmt, patch = _fmt(con, fr, a.patch)
+    if not fmt:
+        sys.exit("no draft format known for this patch")
+    # state team 0 == first actor. Profiles passed in first/second order.
+    P1, P2 = (us, them) if a.first == "us" else (them, us)
+    st = DraftState(fmt, frozenset(fr.heroes))
+    scripted = [x.strip() for x in a.actions.split(",")] if a.actions else []
+    print(f"{us.name} vs {them.name}, patch {patch}, {'we' if a.first == 'us' else 'they'} act first. "
+          f"Type hero name, 'undo', 'state' or 'quit'.")
+    while not st.done:
+        who = "WE" if (st.next_team == 0) == (a.first == "us") else "THEY"
+        print(f"\n--- {who} to {'PICK' if st.next_is_pick else 'BAN'} ---")
+        print(format_candidates(candidates(fr, st, P1, P2), st.step, len(fmt)))
+        if scripted:
+            line = scripted.pop(0); print(f"> {line}")
+        else:
+            try:
+                line = input("> ").strip()
+            except EOFError:
+                break
+        if not line:
+            continue
+        if line == "quit":
+            break
+        if line == "undo":
+            st.undo(); continue
+        if line == "state":
+            print("picks P1:", [fr.hero(h) for h in st.picks(0)], "picks P2:", [fr.hero(h) for h in st.picks(1)],
+                  "bans:", [fr.hero(h) for h in st.bans()]); continue
+        hid = fr.hero_id(line)
+        if hid is None:
+            print(f"unknown/ambiguous hero '{line}'"); continue
+        try:
+            st.apply(hid)
+        except ValueError as e:
+            print(e)
+    if st.done:
+        print("\nDraft complete.")
+        print("P1 picks:", [fr.hero(h) for h in st.picks(0)]); print("P2 picks:", [fr.hero(h) for h in st.picks(1)])
+
+
+def cmd_blindtest(a):
+    import sqlite3
+    from .blindtest import blind_test, to_markdown
+    snap = sqlite3.connect(a.snapshot); snap.row_factory = sqlite3.Row
+    as_of = int(snap.execute("SELECT value FROM meta WHERE key='as_of_ts'").fetchone()[0])
+    live = _con(a)
+    res = blind_test(snap, live, as_of, until=_ts(a.until), patch=a.patch, league=a.league, max_matches=a.max)
+    md = to_markdown(res, _data_version(snap))
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(md, encoding="utf-8")
+    print(md)
+
+
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="bp", description="Dota 2 BP scouting - data pipeline")
+    p = argparse.ArgumentParser(prog="bp", description="Dota 2 BP scouting")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--db", help="sqlite path (default data/db/bp.sqlite); pass a snapshot for as-of analysis")
     sp = p.add_subparsers(dest="cmd", required=True)
 
     s = sp.add_parser("constants", help="load heroes/patches from dotaconstants"); s.add_argument("--offline", action="store_true"); s.set_defaults(f=cmd_constants)
@@ -108,7 +217,25 @@ def main(argv=None):
     s = sp.add_parser("update", help="index+details+normalize+formats+check"); s.add_argument("--since"); s.add_argument("--limit", type=int); s.set_defaults(f=cmd_update)
     s = sp.add_parser("status"); s.set_defaults(f=cmd_status)
 
+    s = sp.add_parser("teams", help="find team ids"); s.add_argument("--q", default=""); s.add_argument("--limit", type=int, default=30); s.set_defaults(f=cmd_teams)
+    for name, fn, hlp in (("report", cmd_report, "pre-match scouting report (markdown)"), ("draft", cmd_draft, "interactive draft board")):
+        s = sp.add_parser(name, help=hlp)
+        s.add_argument("--us", required=True); s.add_argument("--them", required=True)
+        s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD; only use matches before this")
+        if name == "report":
+            s.add_argument("--out"); s.add_argument("--stdout", action="store_true")
+        else:
+            s.add_argument("--first", choices=["us", "them"], required=True)
+            s.add_argument("--actions", help="comma-separated scripted actions (non-interactive)")
+        s.set_defaults(f=fn)
+    s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
+    s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
+    s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.set_defaults(f=cmd_blindtest)
+
     a = p.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):   # player names contain non-GBK glyphs; never crash on a Windows console
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(level=logging.INFO if a.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     a.f(a)
