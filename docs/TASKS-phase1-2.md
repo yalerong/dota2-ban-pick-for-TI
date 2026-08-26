@@ -1,5 +1,7 @@
 # Phase 1–2 可执行任务清单
 
+> 状态（2026-08-26）：P1-01～P1-09 已合并（PR#1）；P2-01～P2-10 已实现，P2-11 Streamlit 未做。盲测基线见 `docs/baseline.md`。
+
 对应 `PLAN.md` 的 Phase 1（数据基础）和 Phase 2（Scouting MVP）。目标是**两周到三周**内拿到第一份有证据的对手 BP 画像报告，其余 Phase 一律不动。
 
 ## MVP 定义（做到这里就算 Phase 2 完成）
