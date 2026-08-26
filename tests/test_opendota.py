@@ -8,6 +8,7 @@ class FakeResp:
     def __init__(self, status, payload):
         self.status_code, self._p = status, payload
         self.text = json.dumps(payload)
+        self.headers = {"X-Rate-Limit-Remaining-Day": "2500"}
 
     def json(self):
         return self._p

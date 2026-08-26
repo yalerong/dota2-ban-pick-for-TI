@@ -14,8 +14,8 @@ from .config import CONFIG
 log = logging.getLogger(__name__)
 BASE = "https://api.opendota.com/api"
 SCHEMA_VERSION = 1
-FREE_PER_MIN = 50   # OpenDota allows 60/min; keep headroom so retries never trip 429
-FREE_PER_DAY = 2000
+FREE_PER_MIN = 45   # OpenDota allows 60/min; 50 still tripped 429 once on proMatches paging
+FREE_PER_DAY = 3000  # docs say 2000, X-Rate-Limit-Remaining-Day header says 3000; header wins at runtime
 
 
 class DailyBudgetExceeded(RuntimeError):
@@ -54,6 +54,19 @@ class OpenDota:
     def budget_left(self) -> int:
         return max(0, self.per_day - self._budget()["used"])
 
+    def _sync_budget_from_header(self, remaining: int) -> None:
+        """Trust OpenDota's own X-Rate-Limit-Remaining-Day over the local counter."""
+        b = self._budget()
+        b["used"] = max(b["used"], self.per_day - remaining) if self.per_day < 10**9 else b["used"]
+        b["header_remaining"] = remaining
+        self._budget_file.write_text(json.dumps(b))
+
+    def _mark_exhausted(self) -> None:
+        b = self._budget()
+        b["used"] = self.per_day
+        b["header_remaining"] = 0
+        self._budget_file.write_text(json.dumps(b))
+
     # ---- raw cache ----------------------------------------------------
     def _cache_path(self, endpoint: str, key: str) -> Path:
         p = self.raw_dir / endpoint.strip("/").replace("/", "_")
@@ -91,11 +104,23 @@ class OpenDota:
                 log.warning("net error %s (%s), retry %d", endpoint, e, attempt)
                 time.sleep(2 ** attempt)
                 continue
+            day_left = r.headers.get("X-Rate-Limit-Remaining-Day")
+            if day_left is not None:
+                self._sync_budget_from_header(int(day_left))
             if r.status_code == 200:
+                if day_left is not None and int(day_left) <= 3:
+                    self._mark_exhausted()
                 return r.json()
             if r.status_code == 404:
                 return None
-            if r.status_code == 429 or r.status_code >= 500:
+            if r.status_code == 429:
+                if day_left is not None and int(day_left) <= 0:
+                    self._mark_exhausted()
+                    raise DailyBudgetExceeded("OpenDota daily limit reached (header)")
+                log.warning("%s -> 429 minute limit, sleeping 30s", endpoint)
+                time.sleep(30)
+                continue
+            if r.status_code >= 500:
                 log.warning("%s -> %s, backoff", endpoint, r.status_code)
                 time.sleep(2 ** attempt * 2)
                 continue
