@@ -199,3 +199,11 @@ def test_h5_page_builds(league, tmp_path):
     # markdown subset round-trips (nested lists close properly)
     h = md_to_html("## S\n\n- a\n  - b\n- c\n")
     assert h.count("<ul>") == h.count("</ul>") == 2 and h.count("<li>") == 3
+
+
+def test_h5_md_inline_rules():
+    from bp.h5 import md_to_html
+    # underscores inside player names must not become italics
+    h = md_to_html("- **not_me** (pos 4) and **some_name** here")
+    assert "<i>" not in h and "<b>not_me</b>" in h
+    assert "<i>no roster found</i>" in md_to_html("_no roster found_")

@@ -261,7 +261,7 @@ function boardState() {
 function boardRecs(m, st, step) {
   const isPick = !!SEQ[step][0], team = teamAt(step), me = m[team], opp = m[team === 'us' ? 'them' : 'us'];
   const used = new Set(ps.actions), mine = st[team].p, theirs = st[team === 'us' ? 'them' : 'us'].p;
-  const oppPickRate = {}; opp.picks.forEach(p => oppPickRate[p.id] = [p.n / Math.max(opp.games, 1), p.lift]);
+  const oppPickRate = {}; opp.picks.forEach(p => oppPickRate[p.id] = [p.rate, p.lift]);   // time-decayed, same as team_hero_stats
   return L.heroes.filter(h => !used.has(h.id)).map(h => {
     const parts = []; let score = 0;
     if (isPick) {
@@ -279,6 +279,7 @@ function boardRecs(m, st, step) {
 }
 function renderBoard() {
   const m = MU[ps.mu]; if (!m) return;
+  if (!SEQ.length) { $('#b-status').textContent = '该版本没有 Draft 格式数据（先跑 bp formats），看板不可用'; $('#b-seq').innerHTML = ''; $('#b-recs').innerHTML = ''; $('#b-search').disabled = true; return; }
   const st = boardState(), step = ps.actions.length, done = step >= SEQ.length;
   $('#b-us h4').textContent = m.us.name; $('#b-them h4').textContent = m.them.name;
   chips($('#b-us-p'), st.us.p, 'ally'); chips($('#b-us-b'), st.us.b, 'ban'); chips($('#b-them-p'), st.them.p, 'enemy'); chips($('#b-them-b'), st.them.b, 'ban');

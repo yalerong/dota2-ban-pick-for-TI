@@ -37,13 +37,14 @@ def hero_icons(heroes: list[dict], cache_dir: Path | None = None, download: bool
         if not f.exists() and download:
             try:
                 import requests
-                r = requests.get(ICON_URL.format(short=short), timeout=15)
+                r = requests.get(ICON_URL.format(short=short), timeout=8)
                 if r.ok and r.headers.get("content-type", "").startswith("image/"):
                     f.write_bytes(r.content)
                 else:
                     log.warning("icon %s: HTTP %s", short, r.status_code)
-            except Exception as e:  # offline is fine
-                log.warning("icon %s: %s", short, e)
+            except Exception as e:  # offline: give up on the rest instead of waiting out 127 timeouts
+                log.warning("icon %s: %s -- skipping remaining downloads (names only)", short, e)
+                download = False
         if f.exists():
             out[h["id"]] = "data:image/png;base64," + base64.b64encode(f.read_bytes()).decode()
     return out
@@ -106,8 +107,8 @@ def _team_payload(fr: Frames, P: TeamProfile, top_n: int = 8) -> dict:
             "sig": {int(k): round(float(v), 3) for k, v in sig.items() if v > 0},
             "bans": [{"id": int(x.hero_id), "rate": round(float(x.phase0_rate), 3), "meta": round(float(x.global_phase0_rate), 3),
                       "lift": round(float(x.targeted_lift), 3)} for x in P.ban_pressure.head(10).itertuples()],
-            "picks": [{"id": int(x.hero_id), "n": int(x.picks), "wr": round(float(x.wr), 3), "lift": round(float(x.win_lift), 3)}
-                      for x in hs.itertuples()]}
+            "picks": [{"id": int(x.hero_id), "n": int(x.picks), "rate": round(float(x.pick_rate), 3), "wr": round(float(x.wr), 3),
+                       "lift": round(float(x.win_lift), 3)} for x in hs.itertuples()]}
 
 
 def matchup_payload(fr: Frames, us: TeamProfile, them: TeamProfile, report_md: str) -> dict:
@@ -116,7 +117,9 @@ def matchup_payload(fr: Frames, us: TeamProfile, them: TeamProfile, report_md: s
 
 
 # ---------------------------------------------------------------- markdown -> html (the subset report.py emits)
-_INLINE = [(re.compile(r"\*\*(.+?)\*\*"), r"<b>\1</b>"), (re.compile(r"_(.+?)_"), r"<i>\1</i>")]
+# italic only for a whole-line _..._ (report.py's "_no roster found_"); an inner-word regex would eat text between
+# underscored player names such as not_me ... some_name
+_INLINE = [(re.compile(r"\*\*(.+?)\*\*"), r"<b>\1</b>"), (re.compile(r"^_(.+)_$"), r"<i>\1</i>")]
 
 
 def _inline(s: str) -> str:
