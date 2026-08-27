@@ -26,6 +26,21 @@ def _con(a):
     return connect(Path(a.db)) if getattr(a, "db", None) else connect()
 
 
+def _snapshot_as_of(con) -> int | None:
+    r = con.execute("SELECT value FROM meta WHERE key='as_of_ts'").fetchone()
+    return int(r[0]) if r else None
+
+
+def _default_patch(con, as_of: int | None = None) -> str | None:
+    q = "SELECT patch FROM matches WHERE excluded=0"
+    args: list = []
+    if as_of is not None:
+        q += " AND start_time < ?"
+        args.append(as_of)
+    r = con.execute(q + " GROUP BY patch ORDER BY COUNT(*) DESC, patch DESC LIMIT 1", args).fetchone()
+    return r[0] if r else None
+
+
 # ---------------------------------------------------------------- phase 1
 def cmd_constants(a):
     from .constants import load_constants
@@ -101,7 +116,11 @@ def cmd_status(a):
 def _frames_and_profiles(a):
     from .profiles import load_frames, build_profile, player_hero_stats
     con = _con(a)
-    fr = load_frames(con, as_of=_ts(getattr(a, "as_of", None)), patch=a.patch)
+    as_of = _ts(getattr(a, "as_of", None))
+    if as_of is None:
+        as_of = _snapshot_as_of(con)
+    patch = a.patch or _default_patch(con, as_of)
+    fr = load_frames(con, as_of=as_of, patch=patch)
     us, them = fr.team_id(a.us), fr.team_id(a.them)
     if us is None or them is None:
         sys.exit(f"team not found: us={a.us}->{us} them={a.them}->{them} (try `bp teams --q NAME`)")
@@ -148,7 +167,7 @@ def cmd_h5(a):
     from .h5 import ladder_payload, matchup_payload, render
     con = _con(a)
     # pin the patch before loading: the page is labelled with one patch, so every number on it must come from that patch
-    patch = a.patch or (con.execute("SELECT patch FROM matches WHERE excluded=0 GROUP BY patch ORDER BY COUNT(*) DESC LIMIT 1").fetchone() or [None])[0]
+    patch = a.patch or _default_patch(con, _ts(a.as_of))
     fr = load_frames(con, as_of=_ts(a.as_of), patch=patch)
     fmt, patch = _fmt(con, fr, patch)
     if fmt is None:

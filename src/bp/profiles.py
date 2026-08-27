@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
@@ -15,8 +16,13 @@ DAY = 86400
 
 
 def load_config(path: Path | None = None) -> dict:
-    p = path or CONFIG.root / "config" / "scoring.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8"))
+    if path is not None:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    source_config = CONFIG.root / "config" / "scoring.yaml"
+    if source_config.exists():
+        return yaml.safe_load(source_config.read_text(encoding="utf-8"))
+    res = resources.files("bp").joinpath("scoring.yaml")
+    return yaml.safe_load(res.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------- frames
@@ -66,7 +72,8 @@ class Frames:
     def team_id(self, name: str) -> int | None:
         q = str(name).strip().lower()
         if q.isdigit():
-            return int(q)
+            tid = int(q)
+            return tid if tid in self.teams else None
         exact = [t for t, n in self.teams.items() if (n or "").lower() == q]
         if exact:
             return exact[0]
@@ -258,8 +265,25 @@ def current_roster(fr: Frames, team_id: int, n_games: int | None = None) -> list
     n = n_games or fr.cfg["decay"]["roster_window_games"]
     tm = team_matches(fr, team_id).head(n)
     r = fr.roster[(fr.roster.match_id.isin(tm.match_id)) & (fr.roster.team_id == team_id) & fr.roster.account_id.notna()]
-    c = r.groupby("account_id").agg(n=("match_id", "size"), pos=("pos", lambda s: int(s.mode().iloc[0])))
-    return [int(a) for a in c.sort_values(["pos", "n"], ascending=[True, False]).index][:5] if len(c) else []
+    c = r.groupby("account_id").agg(n=("match_id", "size"), pos=("pos", lambda s: int(s.mode().iloc[0])),
+                                    last_played=("start_time", "max")).reset_index()
+    if not len(c):
+        return []
+    c = c.sort_values(["pos", "n", "last_played", "account_id"], ascending=[True, False, False, True])
+    chosen: list[int] = []
+    used: set[int] = set()
+    for pos in range(1, 6):
+        rows = c[(c.pos == pos) & (~c.account_id.isin(used))]
+        if len(rows):
+            acct = int(rows.iloc[0].account_id)
+            chosen.append(acct)
+            used.add(acct)
+    if len(chosen) < 5:
+        for r0 in c[~c.account_id.isin(used)].itertuples():
+            chosen.append(int(r0.account_id))
+            if len(chosen) == 5:
+                break
+    return chosen
 
 
 # ---------------------------------------------------------------- P2-03 targeted ban pressure
@@ -325,10 +349,15 @@ def phase_habits(fr: Frames, team_id: int) -> dict:
     """Per phase x (we_first) x action type: decayed hero counters for this team's own actions."""
     e = team_draft(fr, team_id)
     out: dict = defaultdict(Counter)
+    ids: dict = defaultdict(lambda: defaultdict(set))
     for r in e[e.by_team == 1].itertuples():
-        out[(int(r.phase), int(r.we_first), int(r.is_pick))][int(r.hero_id)] += float(r.w)
+        key = (int(r.phase), int(r.we_first), int(r.is_pick))
+        hero = int(r.hero_id)
+        out[key][hero] += float(r.w)
+        ids[key][hero].add(int(r.match_id))
     games = e.drop_duplicates("match_id").groupby("we_first").w.sum().to_dict()
-    return {"counters": dict(out), "games_w_by_first": games, "games": int(e.match_id.nunique())}
+    match_ids = {k: {h: tuple(sorted(v, reverse=True)[:5]) for h, v in hv.items()} for k, hv in ids.items()}
+    return {"counters": dict(out), "match_ids": match_ids, "games_w_by_first": games, "games": int(e.match_id.nunique())}
 
 
 def pair_synergy(fr: Frames, team_id: int, min_count: int = 3) -> pd.DataFrame:
@@ -356,29 +385,39 @@ def pair_synergy(fr: Frames, team_id: int, min_count: int = 3) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- P2-05 opponent response edges
 def response_edges(fr: Frames, team_id: int, max_prefix: int = 3) -> dict:
-    """prefix (tuple of (is_pick, rel_team, hero) for steps before s) -> Counter(hero this team played at step s),
-    for s in 1..max_prefix where this team acts. rel_team: 0 = this team, 1 = opponent."""
+    """Recent action prefix -> Counter(hero this team played next).
+
+    Prefixes retain at most ``max_prefix`` actions and rel_team is 0 for this
+    team, 1 for the opponent. The empty prefix is the unconditional fallback.
+    """
     e = team_draft(fr, team_id)
     edges: dict = defaultdict(Counter)
     for mid, g in e.groupby("match_id"):
         g = g.sort_values("order_no")
         seq = [(int(r.is_pick), 0 if r.by_team else 1, int(r.hero_id), float(r.w)) for r in g.itertuples()]
-        for s in range(1, min(max_prefix, len(seq) - 1) + 1):
+        for s in range(1, len(seq)):
             if seq[s][1] != 0:
                 continue
-            prefix = tuple(x[:3] for x in seq[:s])
-            edges[prefix][seq[s][2]] += seq[s][3]
-            edges[("_n",) + prefix][seq[s][2]] += 1
+            edges[()][seq[s][2]] += seq[s][3]
+            edges[("_n",)][seq[s][2]] += 1
+            for width in range(1, min(max_prefix, s) + 1):
+                prefix = tuple(x[:3] for x in seq[s - width:s])
+                edges[prefix][seq[s][2]] += seq[s][3]
+                edges[("_n",) + prefix][seq[s][2]] += 1
     return dict(edges)
 
 
 def lookup_response(edges: dict, prefix: tuple) -> list[tuple[int, float, int]]:
-    """-> [(hero, weight, raw_count)] sorted for a given prefix; empty if unseen."""
+    """Return a response for the longest known recent prefix, then back off."""
+    prefix = tuple(prefix[-3:])
     c = edges.get(prefix)
+    while not c and prefix:
+        prefix = prefix[1:]
+        c = edges.get(prefix)
     if not c:
         return []
     n = edges.get(("_n",) + prefix, Counter())
-    return sorted(((h, w, n[h]) for h, w in c.items()), key=lambda x: -x[1])
+    return sorted(((h, w, n[h]) for h, w in c.items()), key=lambda x: (-x[1], x[0]))
 
 
 # ---------------------------------------------------------------- team profile bundle

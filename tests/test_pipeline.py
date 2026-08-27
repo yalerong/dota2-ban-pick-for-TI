@@ -11,6 +11,7 @@ from bp.draft_formats import infer_formats, load_format, describe
 from bp.export import export_snapshot
 from bp.normalize import normalize_match, assign_phases, relative_signature, draft_sequence
 from bp.quality import run_checks
+from bp.sync import sync_index
 
 # a plausible 24-action CM sequence: (is_pick, team) -- content doesn't matter, consistency does
 SEQ = [(0, 0), (0, 1), (0, 0), (0, 1), (0, 0), (0, 1), (0, 0),
@@ -37,6 +38,16 @@ def make_match(mid: int, start: int, first_team: int = 0, seq=SEQ, r_team=100, d
             "league": {"name": "Test League"}, "radiant_team_id": r_team, "dire_team_id": d_team,
             "radiant_team": {"team_id": r_team, "name": "Rad"}, "dire_team": {"team_id": d_team, "name": "Dire"},
             "radiant_win": True, "picks_bans": pb, "players": players, "draft_timings": [{"order": 0}]}
+
+
+class IndexClient:
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def pro_matches_page(self, last_id=None):
+        self.calls.append(last_id)
+        return self.pages.pop(0) if self.pages else []
 
 
 @pytest.fixture
@@ -103,3 +114,102 @@ def test_export_as_of_is_deterministic_and_leak_free(con, tmp_path):
     normalize_match(con, make_match(99, base + 10 * 86400)); con.commit(); run_checks(con)
     m3 = export_snapshot(con, as_of, tmp_path / "snap")
     assert m3["data_version"] == m1["data_version"]
+
+
+def test_snapshot_recomputes_formats_and_quality_from_included_matches(con, tmp_path):
+    base = 1_710_000_000
+    for i in range(6):
+        normalize_match(con, make_match(40 + i, base + i * 86400))
+    con.commit()
+    infer_formats(con, min_support=5)
+    run_checks(con)
+    assert con.execute("SELECT COUNT(*) FROM draft_formats").fetchone()[0] == 1
+    assert con.execute("SELECT SUM(excluded) FROM matches").fetchone()[0] == 0
+
+    as_of = datetime.fromtimestamp(base + 4 * 86400, timezone.utc)
+    meta = export_snapshot(con, as_of, tmp_path / "snap")
+    snap = sqlite3.connect(meta["path"])
+    flags = [json.loads(r[0]) for r in snap.execute("SELECT quality_flags FROM matches ORDER BY match_id")]
+
+    assert snap.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 4
+    assert snap.execute("SELECT COUNT(*) FROM draft_formats").fetchone()[0] == 0
+    assert all("no_format_for_patch" in f for f in flags)
+    assert snap.execute("SELECT SUM(excluded) FROM matches").fetchone()[0] == 4
+
+
+def test_snapshot_uses_only_pre_cutoff_name_evidence(con, tmp_path):
+    base = 1_710_000_000
+    con.execute(
+        """INSERT INTO match_index (match_id, start_time, duration, leagueid, league_name, radiant_team_id,
+           dire_team_id, radiant_name, dire_name, radiant_win) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (70, base, 2400, 1, "Test League", 100, 200, "Old Rad", "Dire", 1))
+    old = make_match(70, base)
+    old["radiant_team"]["name"] = "Old Rad"
+    normalize_match(con, old, con.execute("SELECT * FROM match_index WHERE match_id=70").fetchone())
+    con.commit()
+    as_of = datetime.fromtimestamp(base + 86400, timezone.utc)
+    before = export_snapshot(con, as_of, tmp_path / "snap")
+
+    con.execute(
+        """INSERT INTO match_index (match_id, start_time, duration, leagueid, league_name, radiant_team_id,
+           dire_team_id, radiant_name, dire_name, radiant_win) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (71, base + 10 * 86400, 2400, 1, "Test League", 100, 200, "Future Rad", "Dire", 1))
+    future = make_match(71, base + 10 * 86400)
+    future["radiant_team"]["name"] = "Future Rad"
+    future["players"][0]["name"] = "Future Player"
+    normalize_match(con, future, con.execute("SELECT * FROM match_index WHERE match_id=71").fetchone())
+    con.commit()
+
+    after = export_snapshot(con, as_of, tmp_path / "snap")
+    snap = sqlite3.connect(after["path"])
+    team = snap.execute("SELECT name, names_json, last_seen FROM teams WHERE team_id=100").fetchone()
+    player = snap.execute("SELECT name, last_seen FROM players WHERE account_id=1000").fetchone()
+
+    assert after["data_version"] == before["data_version"]
+    assert team == ("Old Rad", '["Old Rad"]', base)
+    assert player == ("p0", base)
+
+
+def test_sync_index_skips_rows_before_since(con):
+    page = [
+        {"match_id": 90, "start_time": 300, "radiant_win": True},
+        {"match_id": 91, "start_time": 200, "radiant_win": False},
+        {"match_id": 92, "start_time": 100, "radiant_win": True},
+    ]
+    res = sync_index(IndexClient([page]), con, since_ts=200, full=True)
+    ids = [r[0] for r in con.execute("SELECT match_id FROM match_index ORDER BY match_id")]
+
+    assert res == {"pages": 1, "inserted": 2}
+    assert ids == [90, 91]
+
+
+def test_duplicate_hero_is_excluded(con):
+    base = 1_710_000_000
+    for i in range(5):
+        normalize_match(con, make_match(100 + i, base + i * 3600))
+    duplicate = make_match(120, base + 6 * 3600)
+    duplicate["picks_bans"][1]["hero_id"] = duplicate["picks_bans"][0]["hero_id"]
+    normalize_match(con, duplicate)
+    con.commit()
+    infer_formats(con, min_support=5)
+    run_checks(con)
+    flags, excluded = con.execute("SELECT quality_flags, excluded FROM matches WHERE match_id=120").fetchone()
+
+    assert "duplicate_hero" in json.loads(flags)
+    assert excluded == 1
+
+
+def test_connect_migrates_player_name_observations(tmp_path):
+    path = tmp_path / "old.sqlite"
+    old = sqlite3.connect(path)
+    old.execute(
+        """CREATE TABLE roster_snapshots (
+           match_id INTEGER, team_id INTEGER, account_id INTEGER, player_slot INTEGER, side INTEGER,
+           hero_id INTEGER, lane_role INTEGER, gpm INTEGER, position_est INTEGER,
+           PRIMARY KEY (match_id, player_slot))""")
+    old.commit()
+    old.close()
+
+    migrated = connect(path)
+    columns = {r[1] for r in migrated.execute("PRAGMA table_info(roster_snapshots)")}
+    assert "player_name" in columns

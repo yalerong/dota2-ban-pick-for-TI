@@ -1,18 +1,22 @@
 """Phase 2 on a synthetic league: two teams with distinct signature heroes, deterministic drafts."""
 from __future__ import annotations
 import random
+from dataclasses import replace
+from importlib import resources
 
+import pandas as pd
 import pytest
 
 from bp.db import connect
+from bp.config import CONFIG
 from bp.draft_formats import infer_formats, load_format
 from bp.draft_state import DraftState
 from bp.normalize import normalize_match
 from bp.profiles import (load_frames, player_hero_stats, build_profile, ban_pressure, response_edges, meta_ban_rates, signature_scores,
-                         lookup_response, current_roster)
+                         lookup_response, current_roster, load_config, TeamProfile)
 from bp.quality import run_checks
 from bp.recommend import candidates
-from bp.report import build_report
+from bp.report import build_report, _lists_section
 from tests.test_pipeline import SEQ
 
 TEAM_A, TEAM_B = 100, 200
@@ -93,6 +97,8 @@ def test_profiles_and_signatures(league):
     fr = load_frames(league, patch="7.41")
     assert len(fr.matches) == 30 and fr.roster.pos.isin([1, 2, 3, 4, 5]).all()
     assert current_roster(fr, TEAM_A) == A_ACCTS
+    assert fr.team_id(str(TEAM_A)) == TEAM_A
+    assert fr.team_id("999999") is None
     stats = player_hero_stats(fr)
     A = build_profile(fr, TEAM_A, stats)
     # every A player's top signature is their scripted hero
@@ -114,6 +120,20 @@ def test_profiles_and_signatures(league):
     assert row.ban_rate_vs_team == 0 and row.targeted_ban_pressure == 0 and "meta" in row.tag
 
 
+def test_current_roster_keeps_one_player_per_position_after_substitution(league):
+    fr = load_frames(league, patch="7.41")
+    latest = fr.roster[(fr.roster.team_id == TEAM_A)].sort_values("start_time", ascending=False).head(5)
+    sub_rows = latest.copy()
+    sub_rows["account_id"] = 1999
+    sub_rows["pos"] = 1
+    sub_rows["gpm"] = sub_rows["gpm"] + 1
+    fr2 = replace(fr, roster=pd.concat([fr.roster, sub_rows], ignore_index=True), players={**fr.players, 1999: "sub1999"})
+    roster = current_roster(fr2, TEAM_A)
+    by_acct = fr2.roster[fr2.roster.account_id.isin(roster)].groupby("account_id").pos.agg(lambda s: int(s.mode().iloc[0]))
+    assert len(roster) == 5
+    assert sorted(by_acct.tolist()) == [1, 2, 3, 4, 5]
+
+
 def test_candidates_and_edges(league):
     fr = load_frames(league, patch="7.41")
     stats = player_hero_stats(fr)
@@ -133,6 +153,8 @@ def test_candidates_and_edges(league):
     edges = response_edges(fr, TEAM_B)
     resp = lookup_response(edges, ((0, 1, 60),))
     assert resp and all(n >= 1 for _, _, n in resp)
+    assert lookup_response(edges, ((0, 1, 60), (0, 0, 61), (0, 1, 62), (0, 0, 63)))
+    assert lookup_response(edges, ((1, 0, 125),))
     # pick turn: A's recommended pick is one of its own signature heroes
     for h in (60, 61, 62, 63, 64, 65, 66):
         st.apply(h)
@@ -140,6 +162,78 @@ def test_candidates_and_edges(league):
     st.apply(70)
     cs = candidates(fr, st, A, B, k=3)
     assert cs[0].action == "pick" and cs[0].hero_id in A_SIG.values()
+
+
+def _profile(team_id: int, stats=None, ban_pressure_df=None, hero_stats=None) -> TeamProfile:
+    empty_stats = pd.DataFrame(columns=["account_id", "hero_id", "signature", "games"])
+    empty_bp = pd.DataFrame(columns=["hero_id", "phase0_rate", "bans", "games", "phase0", "match_ids", "targeted_lift"])
+    empty_hs = pd.DataFrame(columns=["hero_id", "pick_rate", "win_lift", "picks", "wins", "wr", "match_ids"])
+    return TeamProfile(team_id, f"T{team_id}", [], 0, stats if stats is not None else empty_stats,
+                       ban_pressure_df if ban_pressure_df is not None else empty_bp, pd.DataFrame(),
+                       hero_stats if hero_stats is not None else empty_hs,
+                       {"counters": {}, "match_ids": {}, "games_w_by_first": {}, "games": 0},
+                       pd.DataFrame(columns=["count", "lift"]), {})
+
+
+def test_candidate_evidence_drives_samples_match_ids_and_tie_order(league):
+    fr = load_frames(league, patch="7.41")
+    fr.heroes.update({98: "Hero98", 99: "Hero99"})
+    us = _profile(
+        TEAM_A,
+        ban_pressure_df=pd.DataFrame([{"hero_id": 99, "phase0_rate": 0.4, "bans": 4, "games": 10, "phase0": 4,
+                                       "match_ids": (9004, 9003), "targeted_lift": 0.2}]),
+        hero_stats=pd.DataFrame([{"hero_id": 98, "pick_rate": 0.2, "win_lift": 0.1, "picks": 2, "wins": 1,
+                                  "wr": 0.55, "match_ids": (8002, 8001)}]),
+    )
+    them = _profile(TEAM_B)
+    st = DraftState(((1, 0),), frozenset({98, 99}))
+    by_hero = {c.hero_id: c for c in candidates(fr, st, us, them, k=2, context=False)}
+    assert by_hero[99].samples == 4 and by_hero[99].confidence == pytest.approx(4 / 9)
+    assert by_hero[99].match_ids == [9004, 9003]
+    assert by_hero[98].samples == 2 and by_hero[98].match_ids == [8002, 8001]
+
+    tied = candidates(fr, DraftState(((1, 0),), frozenset({3, 1, 2})), _profile(TEAM_A), _profile(TEAM_B),
+                      k=3, context=False)
+    assert [c.hero_id for c in tied] == [1, 2, 3]
+
+
+def test_report_dedupes_protect_steal_and_habits_show_match_ids(league):
+    fr = load_frames(league, patch="7.41")
+    fr.players.update({3001: "a", 3002: "b", 4001: "c", 4002: "d"})
+    us = _profile(
+        TEAM_A,
+        stats=pd.DataFrame([
+            {"account_id": 3001, "hero_id": 30, "signature": 0.9, "games": 3},
+            {"account_id": 3002, "hero_id": 30, "signature": 0.8, "games": 3},
+            {"account_id": 3002, "hero_id": 40, "signature": 0.5, "games": 3},
+        ]),
+        ban_pressure_df=pd.DataFrame([{"hero_id": 30, "targeted_lift": 0.3}]),
+    )
+    them = _profile(
+        TEAM_B,
+        stats=pd.DataFrame([
+            {"account_id": 4001, "hero_id": 40, "signature": 0.7, "games": 3},
+            {"account_id": 4002, "hero_id": 40, "signature": 0.6, "games": 3},
+        ]),
+    )
+    lines = _lists_section(fr, us, them)
+    assert next(x for x in lines if x.startswith("**Protect")).count("Hero30") == 1
+    assert next(x for x in lines if x.startswith("**Steal")).count("Hero40") == 1
+
+    stats = player_hero_stats(fr)
+    A, B = build_profile(fr, TEAM_A, stats), build_profile(fr, TEAM_B, stats)
+    md = build_report(fr, A, B, load_format(league, "7.41"), "7.41", "testver")
+    habit_lines = [x for x in md.splitlines() if x.startswith("- phase-1")]
+    habit_ids = {str(mid) for by_hero in A.habits["match_ids"].values()
+                 for mids in by_hero.values() for mid in mids}
+    assert habit_lines and any(any(mid in line for mid in habit_ids) for line in habit_lines)
+
+
+def test_default_scoring_config_loads_from_package_resource():
+    cfg = load_config()
+    assert cfg["evidence"]["top_k"] == 5
+    assert resources.files("bp").joinpath("scoring.yaml").read_text(encoding="utf-8") == (
+        CONFIG.root / "config" / "scoring.yaml").read_text(encoding="utf-8")
 
 
 def test_as_of_excludes_future_and_report_builds(league):

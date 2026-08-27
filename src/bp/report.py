@@ -37,7 +37,9 @@ def _roster_section(fr: Frames, P: TeamProfile, top_n: int = 6) -> list[str]:
 
 def _habits_section(fr: Frames, P: TeamProfile) -> list[str]:
     L = [f"### {P.name} — draft habits", ""]
-    c = P.habits["counters"]; gw = P.habits["games_w_by_first"]
+    c = P.habits["counters"]
+    ids = P.habits.get("match_ids", {})
+    gw = P.habits["games_w_by_first"]
     for first, label in ((1, "when acting first"), (0, "when acting second")):
         g = gw.get(first, 0)
         if g <= 0:
@@ -46,7 +48,10 @@ def _habits_section(fr: Frames, P: TeamProfile) -> list[str]:
         for phase, kind, title in ((0, 0, "phase-1 bans"), (1, 1, "phase-1 picks"), (2, 0, "phase-2 bans"), (3, 1, "phase-2 picks")):
             cnt = Counter(c.get((phase, first, kind), {}))
             if cnt:
-                L.append(f"- {title}: " + ", ".join(f"{fr.hero(h)} {100*w/g:.0f}%" for h, w in cnt.most_common(6)))
+                key = (phase, first, kind)
+                items = sorted(cnt.items(), key=lambda x: (-x[1], x[0]))[:6]
+                L.append(f"- {title}: " + ", ".join(
+                    f"{fr.hero(h)} {100*w/g:.0f}% — {_ids(ids.get(key, {}).get(h, ()))}" for h, w in items))
         L.append("")
     hs = P.hero_stats.head(8)
     if len(hs):
@@ -84,11 +89,16 @@ def _lists_section(fr: Frames, us: TeamProfile, them: TeamProfile) -> list[str]:
     our = us.stats[us.stats.games >= 3].sort_values("signature", ascending=False)
     their = them.stats[them.stats.games >= 3].sort_values("signature", ascending=False)
     bp_us = us.ban_pressure.set_index("hero_id").targeted_lift.clip(lower=0) if len(us.ban_pressure) else pd.Series(dtype=float)
-    protect = our.assign(bp=bp_us.reindex(our.hero_id).fillna(0).values).sort_values(["bp", "signature"], ascending=False).head(6)
+    protect = (our.assign(bp=bp_us.reindex(our.hero_id).fillna(0).values)
+               .sort_values(["bp", "signature", "hero_id"], ascending=[False, False, True])
+               .drop_duplicates("hero_id")
+               .head(6))
     L.append("**Protect (our signatures that get banned)**: " + ", ".join(
         f"{fr.hero(r.hero_id)} [{fr.player(r.account_id)}] sig {r.signature:.2f}, targeted {100*r.bp:+.0f}pt" for r in protect.itertuples()))
     shared = their.merge(our[["hero_id", "account_id", "signature"]], on="hero_id", suffixes=("_them", "_us"))
-    steal = shared.sort_values("signature_them", ascending=False).head(6)
+    steal = (shared.sort_values(["signature_them", "signature_us", "hero_id"], ascending=[False, False, True])
+             .drop_duplicates("hero_id")
+             .head(6))
     L.append("**Steal (their signatures our roster also plays)**: " + (", ".join(
         f"{fr.hero(r.hero_id)} [{fr.player(r.account_id_them)} → {fr.player(r.account_id_us)}] sig {r.signature_them:.2f}/{r.signature_us:.2f}"
         for r in steal.itertuples()) or "none"))

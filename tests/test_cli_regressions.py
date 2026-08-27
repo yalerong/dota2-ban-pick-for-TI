@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pandas as pd
+
+from bp.db import connect
+
+
+def _insert_match(con, match_id: int, patch: str, start_time: int) -> None:
+    con.execute(
+        """INSERT INTO matches (
+             match_id, patch, patch_id, leagueid, league_name, start_time, duration,
+             radiant_team_id, dire_team_id, radiant_win, series_id, series_type,
+             has_draft_timings, quality_flags, excluded
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (match_id, patch, 1, 1, "League", start_time, 2400, 100, 200, 1, None, None, 1, "[]", 0),
+    )
+
+
+def test_report_defaults_to_snapshot_as_of_and_modal_patch_before_loading(tmp_path, monkeypatch):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+    import bp.report as report
+
+    db = tmp_path / "snap.sqlite"
+    con = connect(db)
+    con.executemany("INSERT INTO teams VALUES (?,?,?,?)", [(100, "Rad", "[]", 1), (200, "Dire", "[]", 1)])
+    con.execute("INSERT INTO meta VALUES (?,?)", ("as_of_ts", "2000"))
+    _insert_match(con, 1, "7.41", 1000)
+    _insert_match(con, 2, "7.41", 1200)
+    _insert_match(con, 3, "7.40", 1300)
+    _insert_match(con, 4, "7.99", 3000)
+    con.commit()
+
+    seen = {}
+
+    class FakeFrames:
+        matches = pd.DataFrame({"patch": ["7.41"]})
+        heroes = {}
+
+        def team_id(self, name):
+            return {"Rad": 100, "Dire": 200}.get(name)
+
+    def fake_load_frames(con_arg, as_of=None, patch=None):
+        seen["as_of"] = as_of
+        seen["patch"] = patch
+        return FakeFrames()
+
+    monkeypatch.setattr(profiles, "load_frames", fake_load_frames)
+    monkeypatch.setattr(profiles, "player_hero_stats", lambda fr: {})
+    monkeypatch.setattr(profiles, "build_profile", lambda fr, tid, stats: SimpleNamespace(team_id=tid, name=f"T{tid}"))
+    monkeypatch.setattr(report, "build_report", lambda *args: "ok")
+
+    cli.cmd_report(
+        SimpleNamespace(db=str(db), us="Rad", them="Dire", patch=None, as_of=None, out=str(tmp_path / "r.md"), stdout=False)
+    )
+
+    assert seen == {"as_of": 2000, "patch": "7.41"}
+
+
+def test_report_preserves_explicit_as_of_and_patch(tmp_path, monkeypatch):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+    import bp.report as report
+
+    db = tmp_path / "snap.sqlite"
+    con = connect(db)
+    con.executemany("INSERT INTO teams VALUES (?,?,?,?)", [(100, "Rad", "[]", 1), (200, "Dire", "[]", 1)])
+    con.execute("INSERT INTO meta VALUES (?,?)", ("as_of_ts", "2000"))
+    _insert_match(con, 1, "7.41", 1000)
+    con.commit()
+
+    seen = {}
+
+    class FakeFrames:
+        matches = pd.DataFrame({"patch": ["7.40"]})
+        heroes = {}
+
+        def team_id(self, name):
+            return {"Rad": 100, "Dire": 200}.get(name)
+
+    monkeypatch.setattr(profiles, "load_frames", lambda con_arg, as_of=None, patch=None: seen.update(as_of=as_of, patch=patch) or FakeFrames())
+    monkeypatch.setattr(profiles, "player_hero_stats", lambda fr: {})
+    monkeypatch.setattr(profiles, "build_profile", lambda fr, tid, stats: SimpleNamespace(team_id=tid, name=f"T{tid}"))
+    monkeypatch.setattr(report, "build_report", lambda *args: "ok")
+
+    cli.cmd_report(
+        SimpleNamespace(
+            db=str(db), us="Rad", them="Dire", patch="7.40", as_of="1970-01-01T00:10:00",
+            out=str(tmp_path / "r.md"), stdout=False
+        )
+    )
+
+    assert seen == {"as_of": 600, "patch": "7.40"}
+
+
+def test_blindtest_uses_inferred_patch_for_snapshot_and_live_query(tmp_path, monkeypatch):
+    import bp.blindtest as blindtest
+
+    snap = connect(tmp_path / "snap.sqlite")
+    live = connect(tmp_path / "live.sqlite")
+    _insert_match(snap, 1, "7.41", 1000)
+    _insert_match(snap, 2, "7.41", 1100)
+    _insert_match(snap, 3, "7.40", 1200)
+    snap.commit()
+
+    seen = {}
+
+    class FakeFrames:
+        matches = pd.DataFrame({"start_time": [1000, 1100], "patch": ["7.41", "7.41"]})
+        events = pd.DataFrame(columns=["phase", "is_pick", "hero_id", "w"])
+        teams = {}
+
+    def fake_load_frames(con_arg, as_of=None, patch=None):
+        seen["load_patch"] = patch
+        return FakeFrames()
+
+    def fake_read_sql_query(query, con_arg, params=None):
+        seen["query"] = query
+        seen["params"] = list(params or [])
+        return pd.DataFrame(
+            columns=["match_id", "patch", "start_time", "radiant_team_id", "dire_team_id", "league_name"]
+        )
+
+    monkeypatch.setattr(blindtest, "load_frames", fake_load_frames)
+    monkeypatch.setattr(blindtest, "load_format", lambda con_arg, patch: ((0, 0),))
+    monkeypatch.setattr(blindtest, "player_hero_stats", lambda fr: {})
+    monkeypatch.setattr(blindtest.pd, "read_sql_query", fake_read_sql_query)
+
+    res = blindtest.blind_test(snap, live, as_of=2000)
+
+    assert seen["load_patch"] == "7.41"
+    assert "AND patch = ?" in seen["query"]
+    assert seen["params"] == [2000, "7.41"]
+    assert res["patch"] == "7.41"

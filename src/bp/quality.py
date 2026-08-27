@@ -8,8 +8,8 @@ from .draft_formats import load_format
 from .normalize import relative_signature
 
 HARD = {"draft_count_mismatch", "draft_format_anomaly", "no_format_for_patch", "unknown_hero",
-        "missing_team", "short_duration", "roster_incomplete", "no_result"}
-SOFT = {"anonymous_player", "missing_draft_timings", "duplicate_hero"}
+        "missing_team", "short_duration", "roster_incomplete", "no_result", "duplicate_hero"}
+SOFT = {"anonymous_player", "missing_draft_timings"}
 MIN_DURATION = 600
 
 

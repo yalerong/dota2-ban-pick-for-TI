@@ -1,0 +1,40 @@
+# Phase 2 scoring weights. Every component is an explainable statistic; change weights here, not in code.
+
+decay:
+  half_life_days: 90        # experience weight = 0.5 ** (age_days / half_life)
+  patch_penalty: 0.7        # extra multiplier per patch boundary crossed
+  prior_strength: 10        # Beta prior strength for win rates (prior = hero's pro win rate on the patch)
+  recent_days: 30           # "recent_usage" = played within this window
+  roster_window_games: 5    # current roster = accounts seen in the team's last N games
+
+signature:                  # player x hero signature score (PLAN: six components)
+  pick_frequency: 1.0       # decayed share of the player's games on this hero
+  relative_win_lift: 2.0    # smoothed hero WR - smoothed player WR
+  targeted_ban_pressure: 1.0 # how often opponents ban it against this team (phase-1 share)
+  recent_usage: 0.3
+  role_adjusted_performance: 0.0   # placeholder, not implemented
+  tournament_readiness: 0.0        # placeholder, not implemented
+
+ban:                        # scoring a candidate ban for us
+  their_signature: 1.0
+  their_pick_rate: 1.0
+  their_win_lift: 1.0
+  our_ban_habit: 0.5
+
+pick:                       # scoring a candidate pick for us
+  our_signature: 1.0
+  their_ban_pressure: 1.0
+  our_pick_rate: 1.0
+  our_win_lift: 1.0
+
+context:                    # draft-context terms (counter / synergy / lineup structure)
+  prior_strength: 10        # Beta shrink for pairwise effects toward the heroes' own baselines
+  counter: 3.0              # mean counter effect (WR deviation, ~±0.1) of the hero vs enemy picks so far
+  synergy: 2.0              # mean synergy effect with own picks so far
+  gap: 0.3                  # share of missing role targets the hero fills
+  targets: {Initiator: 1, Disabler: 2, Durable: 1, Carry: 1, Pusher: 1, Nuker: 1}
+
+evidence:
+  min_samples: 3            # below this a candidate is labelled "insufficient evidence"
+  confidence_k: 5           # confidence = n / (n + k)
+  top_k: 5
