@@ -49,14 +49,25 @@ def hero_icons(heroes: list[dict], cache_dir: Path | None = None, download: bool
     return out
 
 
+def hero_zh_names(path: Path | None = None) -> dict[str, list[str]]:
+    """short npc name -> [display name, aliases...] from config/hero_zh.yaml (missing file -> English only)."""
+    import yaml
+    f = path or CONFIG.root / "config" / "hero_zh.yaml"
+    if not f.exists():
+        return {}
+    return {k: [str(x) for x in (v or [])] for k, v in (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).items()}
+
+
 # ---------------------------------------------------------------- payloads
 def ladder_payload(fr: Frames, con, fmt, download_icons: bool = True) -> dict:
     """Hero list, global WR, per-position pick share, counter/synergy pairs, CM sequence."""
     rows = con.execute("SELECT hero_id, localized_name, primary_attr, roles, name FROM heroes ORDER BY localized_name").fetchall()
     heroes = [{"id": int(h), "name": n, "attr": a or "", "roles": json.loads(r or "[]"), "npc": npc} for h, n, a, r, npc in rows]
     icons = hero_icons(heroes, download=download_icons)
+    zh = hero_zh_names()
     for h in heroes:
         h["icon"] = icons.get(h["id"], "")
+        h["zh"] = zh.get(h["npc"].removeprefix("npc_dota_hero_"), [])
         del h["npc"]
     r = fr.roster
     tot_w = float(r.w.sum()) or 1.0

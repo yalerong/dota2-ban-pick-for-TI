@@ -53,6 +53,13 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
 .seq span.us{background:#1d3a2a;color:var(--ok)}.seq span.them{background:#3a1d24;color:var(--bad)}.seq span.cur{outline:2px solid var(--acc)}
 .seq span.done{opacity:.45}
 .warn{color:var(--warn);font-size:12px}
+.combo{position:relative}
+.dd{position:absolute;left:0;right:0;top:100%;z-index:4;background:#1f2430;border:1px solid var(--line);border-radius:10px;margin-top:4px;max-height:52vh;overflow:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.dd.on{display:block}
+.dd div{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)}
+.dd div:last-child{border-bottom:0}.dd div.used{opacity:.35}
+.dd img{width:32px;height:32px;border-radius:6px}.dd small{color:var(--mut)}
+.en{color:var(--mut);font-size:11px;margin-left:4px}
 </style>
 </head>
 <body>
@@ -74,15 +81,15 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
     <div class="chips" id="l-enemy"></div>
     <div style="margin-top:6px">我方已选</div><div class="chips" id="l-ally"></div>
     <div style="margin-top:6px" class="mut">禁用</div><div class="chips" id="l-ban"></div>
-    <div class="mut" style="margin-top:4px">先按上面选好是给谁加，再在最下方网格点英雄；推荐自动更新，点芯片可移除</div>
+    <div class="mut" style="margin-top:4px">先按上面选好是给谁加，再在下面输入英雄；推荐自动更新，点芯片可移除</div>
+  </div>
+  <div class="card combo">
+    <input id="l-search" placeholder="输入英雄：中文/俗称/英文/首字母，点选加入" autocomplete="off">
+    <div class="dd" id="l-dd"></div>
   </div>
   <div class="card" id="l-rec-card">
     <div class="row" style="justify-content:space-between"><b>推荐</b><span class="mut">克制×<span id="w-c"></span> 协同×<span id="w-s"></span> 补位×<span id="w-g"></span></span></div>
     <div id="l-recs"></div>
-  </div>
-  <div class="card">
-    <input id="l-search" placeholder="搜英雄（英文名，支持首字母）" autocomplete="off">
-    <div class="grid" id="l-grid" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -103,9 +110,9 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
       </div>
       <div class="row" style="margin-top:8px"><button id="b-undo">撤销</button><button id="b-reset">重开</button><span class="mut" id="b-status"></span></div>
     </div>
-    <div class="card">
-      <input id="b-search" placeholder="搜英雄，点选即执行当前一手" autocomplete="off">
-      <div class="grid" id="b-grid" style="margin-top:8px"></div>
+    <div class="card combo">
+      <input id="b-search" placeholder="输入英雄，点选即执行当前一手" autocomplete="off">
+      <div class="dd" id="b-dd"></div>
     </div>
     <div class="card"><b id="b-rec-title">推荐</b><div class="warn">H5 简化评分：绝活/meta + 克制/协同/补位，不含习惯与回应项；权威结果用 bp draft</div><div id="b-recs"></div></div>
   </div>
@@ -119,13 +126,38 @@ L.heroes.forEach(h => H[h.id] = h);
 L.counter.forEach(([a, b, e, n]) => CT.set(a + ',' + b, [e, n]));
 L.synergy.forEach(([a, b, e, n]) => SY.set(a + ',' + b, [e, n]));
 const W = L.weights.context, WP = L.weights.pick, WB = L.weights.ban;
-const name = id => (H[id] || {name: '#' + id}).name;
+const name = id => { const h = H[id]; return h ? ((h.zh && h.zh[0]) || h.name) : '#' + id; };
+const nameEn = id => (H[id] && H[id].zh && H[id].zh[0]) ? `<span class="en">${H[id].name}</span>` : '';
 const img = id => (H[id] && H[id].icon) ? `<img src="${H[id].icon}" alt="">` : '';
 const pt = x => (x >= 0 ? '+' : '') + (100 * x).toFixed(1);
 const cls = x => x >= 0 ? 'pos' : 'neg';
 const $ = s => document.querySelector(s);
 const initials = s => s.split(/[\s'-]+/).map(w => w[0] || '').join('').toLowerCase();
-function matches(h, q) { q = q.trim().toLowerCase(); return !q || h.name.toLowerCase().includes(q) || initials(h.name).startsWith(q); }
+function matches(h, q) { q = q.trim().toLowerCase(); return !q || h.name.toLowerCase().includes(q) || initials(h.name).startsWith(q) || (h.zh || []).some(z => z.toLowerCase().includes(q)); }
+// input + dropdown: shows matches while typing (top 10, exact match first), tap to pick
+function combo(inp, dd, usedFn, onPick) {
+  const render = () => {
+    const q = inp.value.trim(), used = usedFn();
+    if (!q) { dd.classList.remove('on'); return; }
+    const ql = q.toLowerCase();
+    const list = L.heroes.filter(h => matches(h, q)).sort((a, b) => {
+      const ea = (a.zh || []).concat(a.name).some(z => z.toLowerCase() === ql), eb = (b.zh || []).concat(b.name).some(z => z.toLowerCase() === ql);
+      return (eb - ea) || (a.name < b.name ? -1 : 1);
+    }).slice(0, 10);
+    dd.innerHTML = '';
+    list.forEach(h => {
+      const d = document.createElement('div'); if (used.has(h.id)) d.className = 'used';
+      d.innerHTML = `${img(h.id)}<span>${name(h.id)}${nameEn(h.id)}</span><small>${(h.zh || []).slice(1).join(' / ')}</small>`;
+      d.onmousedown = e => { e.preventDefault(); if (used.has(h.id)) return; inp.value = ''; dd.classList.remove('on'); onPick(h.id); };
+      dd.appendChild(d);
+    });
+    if (!list.length) dd.innerHTML = '<div><small>没有匹配的英雄</small></div>';
+    dd.classList.add('on');
+  };
+  inp.addEventListener('input', render); inp.addEventListener('focus', render);
+  inp.addEventListener('blur', () => setTimeout(() => dd.classList.remove('on'), 150));
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { const first = dd.querySelector('div:not(.used)'); if (first && first.onmousedown) first.onmousedown(e); } });
+}
 function seg(row, attr, cb) { row.querySelectorAll('button').forEach(b => b.onclick = () => { row.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); cb(b.dataset[attr]); }); }
 
 // ---- context terms (mirror of context.py) ----
@@ -162,7 +194,7 @@ function recList(el, recs, fmt) {
   el.innerHTML = recs.length ? '' : '<div class="mut">没有可推荐的英雄</div>';
   recs.forEach(r => {
     const d = document.createElement('div'); d.className = 'rec';
-    d.innerHTML = `<div class="h"><b>${img(r.id)}${r.name}</b><span class="s ${cls(r.score)}">${fmt(r.score)}</span></div><div class="d">${r.detail}</div>`;
+    d.innerHTML = `<div class="h"><b>${img(r.id)}${name(r.id)}${nameEn(r.id)}</b><span class="s ${cls(r.score)}">${fmt(r.score)}</span></div><div class="d">${r.detail}</div>`;
     el.appendChild(d);
   });
 }
@@ -174,7 +206,10 @@ $('#w-c').textContent = W.counter; $('#w-s').textContent = W.synergy; $('#w-g').
 seg($('#pos-row'), 'pos', v => { ls.pos = +v; renderLadder(); });
 seg($('#mode-row'), 'mode', v => ls.mode = v);
 $('#l-clear').onclick = () => { ls.ally = []; ls.enemy = []; ls.ban = []; renderLadder(); };
-$('#l-search').oninput = e => { ls.q = e.target.value; renderLadder(); };
+combo($('#l-search'), $('#l-dd'), () => new Set([...ls.ally, ...ls.enemy, ...ls.ban]), id => {
+  if (ls.mode === 'ally' && ls.ally.length >= 5) return; if (ls.mode === 'enemy' && ls.enemy.length >= 5) return;
+  ls[ls.mode].push(id); renderLadder(); $('#l-rec-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+});
 function ladderRecs() {
   const used = new Set([...ls.ally, ...ls.enemy, ...ls.ban]);
   const posMax = ls.pos ? Math.max(...Object.values(L.stats).map(s => s.pos[ls.pos - 1])) : 1;
@@ -199,8 +234,6 @@ function renderLadder() {
   chips($('#l-ally'), ls.ally, 'ally', id => { ls.ally = ls.ally.filter(x => x !== id); renderLadder(); });
   chips($('#l-enemy'), ls.enemy, 'enemy', id => { ls.enemy = ls.enemy.filter(x => x !== id); renderLadder(); });
   chips($('#l-ban'), ls.ban, 'ban', id => { ls.ban = ls.ban.filter(x => x !== id); renderLadder(); });
-  const used = new Set([...ls.ally, ...ls.enemy, ...ls.ban]);
-  heroGrid($('#l-grid'), ls.q, used, id => { if (ls.mode === 'ally' && ls.ally.length >= 5) return; if (ls.mode === 'enemy' && ls.enemy.length >= 5) return; ls[ls.mode].push(id); ls.q = ''; $('#l-search').value = ''; renderLadder(); $('#l-rec-card').scrollIntoView({behavior: 'smooth', block: 'start'}); });
   if (ls.ally.length + ls.enemy.length) recList($('#l-recs'), ladderRecs());
   else $('#l-recs').innerHTML = '<div class="mut">先选你的位置，再点对面已选 / 我方已选的英雄，这里会给出兼顾克制与适配的推荐</div>';
 }
@@ -217,7 +250,7 @@ seg($('#sub-row'), 'sub', v => { ps.sub = v; renderPro(); });
 seg($('#first-row'), 'first', v => { ps.first = v; ps.actions = []; renderPro(); });
 $('#b-undo').onclick = () => { ps.actions.pop(); renderPro(); };
 $('#b-reset').onclick = () => { ps.actions = []; renderPro(); };
-$('#b-search').oninput = e => { ps.q = e.target.value; renderBoard(); };
+combo($('#b-search'), $('#b-dd'), () => new Set(ps.actions), id => { if (ps.actions.length >= SEQ.length) return; ps.actions.push(id); renderBoard(); });
 const SEQ = L.cm_seq;
 const teamAt = i => ((SEQ[i][1] === 0) === (ps.first === 'us')) ? 'us' : 'them';
 function boardState() {
@@ -253,7 +286,6 @@ function renderBoard() {
   SEQ.forEach(([p, t], i) => { const s = document.createElement('span'); s.className = teamAt(i) + (i < step ? ' done' : '') + (i === step ? ' cur' : ''); s.textContent = p ? 'P' : 'B'; s.title = i < step ? name(ps.actions[i]) : ''; seqEl.appendChild(s); });
   $('#b-us').classList.toggle('turn', !done && teamAt(step) === 'us'); $('#b-them').classList.toggle('turn', !done && teamAt(step) === 'them');
   $('#b-status').textContent = done ? 'Draft 完成' : `第 ${step + 1}/${SEQ.length} 手：${teamAt(step) === 'us' ? m.us.name : m.them.name} ${SEQ[step][0] ? 'Pick' : 'Ban'}`;
-  heroGrid($('#b-grid'), ps.q, new Set(ps.actions), id => { if (done) return; ps.actions.push(id); ps.q = ''; $('#b-search').value = ''; renderBoard(); });
   if (done) { $('#b-recs').innerHTML = ''; return; }
   const team = teamAt(step);
   $('#b-rec-title').textContent = (team === 'us' ? '我方' : '对方可能的') + (SEQ[step][0] ? ' Pick' : ' Ban');
