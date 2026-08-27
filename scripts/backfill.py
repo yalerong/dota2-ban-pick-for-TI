@@ -67,7 +67,14 @@ def main() -> int:
         nxt = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
         wait = (nxt - now).total_seconds()
         log.info("%d pending; sleeping %.1f h until %s", pending, wait / 3600, nxt.isoformat())
-        time.sleep(wait)
+        sleep_until(nxt)
+
+
+def sleep_until(when: datetime, chunk: float = 300.0) -> None:
+    """Sleep against the wall clock in short chunks: a single long time.sleep() does not count down while the
+    machine is asleep, so after a laptop nap the driver would overshoot the UTC budget reset by hours."""
+    while (left := (when - datetime.now(timezone.utc)).total_seconds()) > 0:
+        time.sleep(min(chunk, left))
 
 
 if __name__ == "__main__":
