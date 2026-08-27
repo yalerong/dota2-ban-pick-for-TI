@@ -141,6 +141,38 @@ def cmd_report(a):
     print(md if a.stdout else f"wrote {out}")
 
 
+def cmd_h5(a):
+    """Single-file mobile page: ladder helper + one section per --matchup "Us|Them"."""
+    from .profiles import load_frames, build_profile, player_hero_stats
+    from .report import build_report
+    from .h5 import ladder_payload, matchup_payload, render
+    con = _con(a)
+    # pin the patch before loading: the page is labelled with one patch, so every number on it must come from that patch
+    patch = a.patch or (con.execute("SELECT patch FROM matches WHERE excluded=0 GROUP BY patch ORDER BY COUNT(*) DESC LIMIT 1").fetchone() or [None])[0]
+    fr = load_frames(con, as_of=_ts(a.as_of), patch=patch)
+    fmt, patch = _fmt(con, fr, patch)
+    if fmt is None:
+        print(f"warning: no draft format for patch {patch}; the Draft Board will be disabled (run `bp formats`)", file=sys.stderr)
+    stats = player_hero_stats(fr)
+    matchups = []
+    for spec in a.matchup or []:
+        if "|" not in spec:
+            sys.exit(f'--matchup expects "Us|Them", got {spec!r}')
+        us_q, them_q = (x.strip() for x in spec.split("|", 1))
+        us, them = fr.team_id(us_q), fr.team_id(them_q)
+        if us is None or them is None:
+            sys.exit(f"team not found: us={us_q}->{us} them={them_q}->{them} (try `bp teams --q NAME`)")
+        pu, pt = build_profile(fr, us, stats), build_profile(fr, them, stats)
+        matchups.append(matchup_payload(fr, pu, pt, build_report(fr, pu, pt, fmt, patch, _data_version(con))))
+    meta = {"patch": patch or "all", "matches": int(len(fr.matches)),
+            "as_of": datetime.fromtimestamp(fr.as_of, timezone.utc).strftime("%Y-%m-%d"), "data_version": _data_version(con) or "live-db"}
+    out = Path(a.out) if a.out else CONFIG.root / "h5" / "index.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta), encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size // 1024} KB, {len(matchups)} matchups)")
+    print(f"phone on the same Wi-Fi: python -m http.server 8000 -d \"{out.parent}\"  then open http://<this-pc-ip>:8000/")
+
+
 def cmd_draft(a):
     from .draft_state import DraftState
     from .recommend import candidates, format_candidates
@@ -229,6 +261,10 @@ def main(argv=None):
             s.add_argument("--first", choices=["us", "them"], required=True)
             s.add_argument("--actions", help="comma-separated scripted actions (non-interactive)")
         s.set_defaults(f=fn)
+    s = sp.add_parser("h5", help="single-file mobile page (ladder helper + pro BP report/board)")
+    s.add_argument("--matchup", action="append", metavar="US|THEM", help='repeatable, e.g. --matchup "Team Spirit|Team Liquid"')
+    s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
+    s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
     s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms"); s.set_defaults(f=cmd_blindtest)

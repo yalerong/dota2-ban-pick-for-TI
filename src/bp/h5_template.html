@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dota2 BP 助手</title>
+<style>
+:root{--bg:#0f1115;--card:#181c24;--line:#2a3040;--fg:#e8eaf0;--mut:#8a93a6;--acc:#4f8cff;--ok:#3ccf7a;--bad:#ff5c6c;--warn:#ffb648;
+      --str:#e0504f;--agi:#3ec27a;--int:#4f9cff;--all:#c98cff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;overflow-x:hidden;max-width:100vw;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+a{color:var(--acc);text-decoration:none}
+button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+input{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;width:100%}
+.tabs{position:sticky;top:0;z-index:5;display:flex;background:var(--bg);border-bottom:1px solid var(--line)}
+.tabs button{flex:1;border:0;border-radius:0;background:none;padding:12px 0;color:var(--mut);border-bottom:2px solid transparent}
+.tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
+.page{display:none;padding:10px 10px 60px}.page.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;margin:8px 0}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.row.seg button{flex:1;padding:8px 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mut{color:var(--mut);font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;min-height:28px}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px 3px 4px;font-size:13px;background:#1f2430;display:inline-flex;align-items:center;max-width:100%}
+.chip.ally{border-color:var(--ok)}.chip.enemy{border-color:var(--bad)}.chip.ban{border-color:var(--mut);opacity:.7;text-decoration:line-through}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;max-height:42vh;overflow:auto;padding:2px}
+.hero{border:1px solid var(--line);border-radius:8px;padding:5px 3px;font-size:11px;text-align:center;background:#1f2430;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top-width:3px;min-width:0}
+.hero img{display:block;width:44px;height:44px;margin:0 auto 3px;border-radius:6px;object-fit:cover}
+.chip img,.rec img{width:22px;height:22px;border-radius:4px;vertical-align:-6px;margin-right:4px}
+.rec .h b{display:flex;align-items:center;gap:6px}
+.hero.str{border-top-color:var(--str)}.hero.agi{border-top-color:var(--agi)}.hero.int{border-top-color:var(--int)}.hero.all{border-top-color:var(--all)}
+.hero.used{opacity:.25}
+.rec{border-top:1px solid var(--line);padding:8px 0}
+.rec .h{display:flex;justify-content:space-between;align-items:baseline}
+.rec .h b{font-size:16px}
+.rec .s{font-variant-numeric:tabular-nums}
+.pos{color:var(--ok)}.neg{color:var(--bad)}
+.rec .d{font-size:12px;color:var(--mut);margin-top:3px}
+details.sec{margin:6px 0;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+details.sec>summary{padding:10px;font-weight:600;cursor:pointer;list-style:none}
+details.sec>summary::before{content:"▸ ";color:var(--mut)}details.sec[open]>summary::before{content:"▾ "}
+details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
+.rep h1{font-size:18px;margin:8px 0}.rep ul{padding-left:18px;margin:4px 0}.rep li{margin:3px 0;word-break:break-word}.rep p{margin:6px 0}
+.rep a{font-size:12px;opacity:.8}
+.draft{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.draft .side{background:#12151c;border-radius:10px;padding:8px;min-height:120px}
+.draft .side h4{margin:0 0 6px;font-size:13px}
+.draft .side.turn{outline:2px solid var(--acc)}
+.seq{display:flex;gap:3px;flex-wrap:wrap;margin:6px 0}
+.seq span{width:18px;height:18px;border-radius:4px;font-size:10px;display:flex;align-items:center;justify-content:center;background:#1f2430;color:var(--mut)}
+.seq span.us{background:#1d3a2a;color:var(--ok)}.seq span.them{background:#3a1d24;color:var(--bad)}.seq span.cur{outline:2px solid var(--acc)}
+.seq span.done{opacity:.45}
+.warn{color:var(--warn);font-size:12px}
+.combo{position:relative}
+.dd{position:absolute;left:0;right:0;top:100%;z-index:4;background:#1f2430;border:1px solid var(--line);border-radius:10px;margin-top:4px;max-height:52vh;overflow:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.dd.on{display:block}
+.dd div{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)}
+.dd div:last-child{border-bottom:0}.dd div.used{opacity:.35}
+.dd img{width:32px;height:32px;border-radius:6px}.dd small{color:var(--mut)}
+.en{color:var(--mut);font-size:11px;margin-left:4px}
+</style>
+</head>
+<body>
+<div class="tabs"><button id="t-ladder" class="on">天梯</button><button id="t-pro">比赛 BP</button></div>
+
+<!-- ====================================================== ladder -->
+<div class="page on" id="p-ladder">
+  <div class="card">
+    <div class="mut" id="ladder-meta"></div>
+    <div class="row seg" style="margin-top:8px" id="pos-row">
+      <button data-pos="0" class="on">不限</button><button data-pos="1">1</button><button data-pos="2">2</button><button data-pos="3">3</button><button data-pos="4">4</button><button data-pos="5">5</button>
+    </div>
+    <div class="row seg" style="margin-top:6px" id="mode-row">
+      <button data-mode="enemy" class="on">对面选了</button><button data-mode="ally">我方选了</button><button data-mode="ban">已禁用</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row" style="justify-content:space-between"><span>对面已选</span><button id="l-clear" style="padding:4px 10px;font-size:12px">清空</button></div>
+    <div class="chips" id="l-enemy"></div>
+    <div style="margin-top:6px">我方已选</div><div class="chips" id="l-ally"></div>
+    <div style="margin-top:6px" class="mut">禁用</div><div class="chips" id="l-ban"></div>
+    <div class="mut" style="margin-top:4px">先按上面选好是给谁加，再在下面输入英雄；推荐自动更新，点芯片可移除</div>
+  </div>
+  <div class="card combo">
+    <input id="l-search" placeholder="输入英雄：中文/俗称/英文/首字母，点选加入" autocomplete="off">
+    <div class="dd" id="l-dd"></div>
+  </div>
+  <div class="card" id="l-rec-card">
+    <div class="row" style="justify-content:space-between"><b>推荐</b><span class="mut">克制×<span id="w-c"></span> 协同×<span id="w-s"></span> 补位×<span id="w-g"></span></span></div>
+    <div id="l-recs"></div>
+  </div>
+</div>
+
+<!-- ====================================================== pro -->
+<div class="page" id="p-pro">
+  <div class="card">
+    <div class="row seg" id="mu-row"></div>
+    <div class="row seg" style="margin-top:6px" id="sub-row"><button data-sub="report" class="on">赛前报告</button><button data-sub="board">Draft Board</button></div>
+  </div>
+  <div id="pro-report" class="rep"></div>
+  <div id="pro-board" style="display:none">
+    <div class="card">
+      <div class="row seg" id="first-row"><button data-first="us" class="on">我方先手</button><button data-first="them">对方先手</button></div>
+      <div class="seq" id="b-seq"></div>
+      <div class="draft">
+        <div class="side" id="b-us"><h4></h4><div class="mut">Pick</div><div class="chips" id="b-us-p"></div><div class="mut">Ban</div><div class="chips" id="b-us-b"></div></div>
+        <div class="side" id="b-them"><h4></h4><div class="mut">Pick</div><div class="chips" id="b-them-p"></div><div class="mut">Ban</div><div class="chips" id="b-them-b"></div></div>
+      </div>
+      <div class="row" style="margin-top:8px"><button id="b-undo">撤销</button><button id="b-reset">重开</button><span class="mut" id="b-status"></span></div>
+    </div>
+    <div class="card combo">
+      <input id="b-search" placeholder="输入英雄，点选即执行当前一手" autocomplete="off">
+      <div class="dd" id="b-dd"></div>
+    </div>
+    <div class="card"><b id="b-rec-title">推荐</b><div class="warn">H5 简化评分：绝活/meta + 克制/协同/补位，不含习惯与回应项；权威结果用 bp draft</div><div id="b-recs"></div></div>
+  </div>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const L = D.ladder, H = {}, CT = new Map(), SY = new Map();
+L.heroes.forEach(h => H[h.id] = h);
+L.counter.forEach(([a, b, e, n]) => CT.set(a + ',' + b, [e, n]));
+L.synergy.forEach(([a, b, e, n]) => SY.set(a + ',' + b, [e, n]));
+const W = L.weights.context, WP = L.weights.pick, WB = L.weights.ban;
+const name = id => { const h = H[id]; return h ? ((h.zh && h.zh[0]) || h.name) : '#' + id; };
+const nameEn = id => (H[id] && H[id].zh && H[id].zh[0]) ? `<span class="en">${H[id].name}</span>` : '';
+const img = id => (H[id] && H[id].icon) ? `<img src="${H[id].icon}" alt="">` : '';
+const pt = x => (x >= 0 ? '+' : '') + (100 * x).toFixed(1);
+const cls = x => x >= 0 ? 'pos' : 'neg';
+const $ = s => document.querySelector(s);
+const initials = s => s.split(/[\s'-]+/).map(w => w[0] || '').join('').toLowerCase();
+function matches(h, q) { q = q.trim().toLowerCase(); return !q || h.name.toLowerCase().includes(q) || initials(h.name).startsWith(q) || (h.zh || []).some(z => z.toLowerCase().includes(q)); }
+// input + dropdown: shows matches while typing (top 10, exact match first), tap to pick
+function combo(inp, dd, usedFn, onPick) {
+  const render = () => {
+    const q = inp.value.trim(), used = usedFn();
+    if (!q) { dd.classList.remove('on'); return; }
+    const ql = q.toLowerCase();
+    const list = L.heroes.filter(h => matches(h, q)).sort((a, b) => {
+      const ea = (a.zh || []).concat(a.name).some(z => z.toLowerCase() === ql), eb = (b.zh || []).concat(b.name).some(z => z.toLowerCase() === ql);
+      return (eb - ea) || (a.name < b.name ? -1 : 1);
+    }).slice(0, 10);
+    dd.innerHTML = '';
+    list.forEach(h => {
+      const d = document.createElement('div'); if (used.has(h.id)) d.className = 'used';
+      d.innerHTML = `${img(h.id)}<span>${name(h.id)}${nameEn(h.id)}</span><small>${(h.zh || []).slice(1).join(' / ')}</small>`;
+      d.onmousedown = e => { e.preventDefault(); if (used.has(h.id)) return; inp.value = ''; dd.classList.remove('on'); onPick(h.id); };
+      dd.appendChild(d);
+    });
+    if (!list.length) dd.innerHTML = '<div><small>没有匹配的英雄</small></div>';
+    dd.classList.add('on');
+  };
+  inp.addEventListener('input', render); inp.addEventListener('focus', render);
+  inp.addEventListener('blur', () => setTimeout(() => dd.classList.remove('on'), 150));
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { const first = dd.querySelector('div:not(.used)'); if (first && first.onmousedown) first.onmousedown(e); } });
+}
+function seg(row, attr, cb) { row.querySelectorAll('button').forEach(b => b.onclick = () => { row.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); cb(b.dataset[attr]); }); }
+
+// ---- context terms (mirror of context.py) ----
+function counterVs(h, opp) { const d = opp.map(o => { const v = CT.get(h + ',' + o) || [0, 0]; return [o, v[0], v[1]]; }); return [d.length ? d.reduce((s, x) => s + x[1], 0) / d.length : 0, d]; }
+function synergyWith(h, mine) { const d = mine.map(m => { const v = SY.get(Math.min(h, m) + ',' + Math.max(h, m)) || [0, 0]; return [m, v[0], v[1]]; }); return [d.length ? d.reduce((s, x) => s + x[1], 0) / d.length : 0, d]; }
+function gapFill(h, mine) {
+  const have = {}; mine.forEach(m => (H[m] ? H[m].roles : []).forEach(t => have[t] = (have[t] || 0) + 1));
+  const missing = Object.entries(L.targets).filter(([t, need]) => (have[t] || 0) < need).map(([t]) => t);
+  if (!missing.length) return [0, []];
+  const fills = missing.filter(t => (H[h] ? H[h].roles : []).includes(t));
+  return [fills.length / missing.length, fills];
+}
+function ctxScore(h, mine, opp, noGap) {
+  const [c, cd] = counterVs(h, opp), [s, sd] = synergyWith(h, mine), [g, gd] = noGap ? [0, []] : gapFill(h, mine);
+  return {score: W.counter * c + W.synergy * s + W.gap * g, c, cd, s, sd, g, gd};
+}
+function ctxDetail(r) {
+  const parts = [];
+  r.cd.forEach(([o, e, n]) => parts.push(`克 ${name(o)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`));
+  r.sd.forEach(([m, e, n]) => parts.push(`配 ${name(m)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`));
+  if (r.gd.length) parts.push('补 ' + r.gd.join('/'));
+  return parts.join(' · ');
+}
+function heroGrid(el, q, used, onTap) {
+  el.innerHTML = '';
+  L.heroes.filter(h => matches(h, q)).forEach(h => {
+    const b = document.createElement('div'); b.className = 'hero ' + h.attr + (used.has(h.id) ? ' used' : ''); b.innerHTML = img(h.id) + h.name;
+    b.onclick = () => { if (!used.has(h.id)) onTap(h.id); }; el.appendChild(b);
+  });
+}
+function chips(el, ids, kind, onTap) { el.innerHTML = ''; ids.forEach(id => { const c = document.createElement('span'); c.className = 'chip ' + kind; c.innerHTML = img(id) + name(id); if (onTap) c.onclick = () => onTap(id); el.appendChild(c); }); }
+function recList(el, recs, fmt) {
+  fmt = fmt || pt;
+  el.innerHTML = recs.length ? '' : '<div class="mut">没有可推荐的英雄</div>';
+  recs.forEach(r => {
+    const d = document.createElement('div'); d.className = 'rec';
+    d.innerHTML = `<div class="h"><b>${img(r.id)}${name(r.id)}${nameEn(r.id)}</b><span class="s ${cls(r.score)}">${fmt(r.score)}</span></div><div class="d">${r.detail}</div>`;
+    el.appendChild(d);
+  });
+}
+
+// ====================================================== ladder
+const ls = {pos: 0, mode: 'enemy', ally: [], enemy: [], ban: [], q: ''};
+$('#ladder-meta').textContent = `数据：${D.meta.patch} 职业赛 ${D.meta.matches} 场（截至 ${D.meta.as_of}）。克制/协同来自职业赛，天梯只作参考。`;
+$('#w-c').textContent = W.counter; $('#w-s').textContent = W.synergy; $('#w-g').textContent = W.gap;
+seg($('#pos-row'), 'pos', v => { ls.pos = +v; renderLadder(); });
+seg($('#mode-row'), 'mode', v => ls.mode = v);
+$('#l-clear').onclick = () => { ls.ally = []; ls.enemy = []; ls.ban = []; renderLadder(); };
+combo($('#l-search'), $('#l-dd'), () => new Set([...ls.ally, ...ls.enemy, ...ls.ban]), id => {
+  if (ls.mode === 'ally' && ls.ally.length >= 5) return; if (ls.mode === 'enemy' && ls.enemy.length >= 5) return;
+  ls[ls.mode].push(id); renderLadder(); $('#l-rec-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+});
+function ladderRecs() {
+  const used = new Set([...ls.ally, ...ls.enemy, ...ls.ban]);
+  const posMax = ls.pos ? Math.max(...Object.values(L.stats).map(s => s.pos[ls.pos - 1])) : 1;
+  return L.heroes.filter(h => !used.has(h.id)).map(h => {
+    const st = L.stats[h.id] || {wr: .5, pos: [0, 0, 0, 0, 0], rate: 0};
+    const r = ctxScore(h.id, ls.ally, ls.enemy);
+    // role-gap only means something once most of the lineup is known: scale by known allies (0/4 .. 4/4)
+    const gapScale = Math.min(1, ls.ally.length / 4); r.score -= W.gap * r.g * (1 - gapScale); r.g *= gapScale;
+    // meta term: pick share at my position (scaled so the top hero ≈ +10pt), or overall pick rate when "any"
+    const meta = ls.pos ? 0.1 * st.pos[ls.pos - 1] / (posMax || 1) : 0.1 * Math.min(1, st.rate / 0.3);
+    const wr = st.wr - 0.5;
+    const vs = r.cd.map(([o, e, n]) => `${name(o)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`).join(' · ');
+    const fit = r.sd.map(([m, e, n]) => `${name(m)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`).concat(r.gd.length ? ['补 ' + r.gd.join('/')] : []).join(' · ');
+    const lines = [];
+    if (vs) lines.push(`克制对面 <b class="${cls(r.c)}">${pt(W.counter * r.c)}</b>：${vs}`);
+    if (fit) lines.push(`适配我方 <b class="${cls(r.s)}">${pt(W.synergy * r.s + W.gap * r.g)}</b>：${fit}`);
+    lines.push(`热度 ${pt(meta)} · 胜率 ${pt(wr)}<small>(${st.n})</small>`);
+    return {id: h.id, name: h.name, score: r.score + meta + wr, detail: lines.join('<br>'), posShare: ls.pos ? st.pos[ls.pos - 1] : 1};
+  }).filter(r => r.posShare >= 0.01).sort((a, b) => b.score - a.score).slice(0, 12);
+}
+function renderLadder() {
+  chips($('#l-ally'), ls.ally, 'ally', id => { ls.ally = ls.ally.filter(x => x !== id); renderLadder(); });
+  chips($('#l-enemy'), ls.enemy, 'enemy', id => { ls.enemy = ls.enemy.filter(x => x !== id); renderLadder(); });
+  chips($('#l-ban'), ls.ban, 'ban', id => { ls.ban = ls.ban.filter(x => x !== id); renderLadder(); });
+  if (ls.ally.length + ls.enemy.length) recList($('#l-recs'), ladderRecs());
+  else $('#l-recs').innerHTML = '<div class="mut">先选你的位置，再点对面已选 / 我方已选的英雄，这里会给出兼顾克制与适配的推荐</div>';
+}
+renderLadder();
+
+// ====================================================== pro
+const MU = D.matchups;
+const ps = {mu: 0, sub: 'report', first: 'us', actions: [], q: ''};
+const muRow = $('#mu-row');
+MU.forEach((m, i) => { const b = document.createElement('button'); b.textContent = m.title; b.dataset.mu = i; if (!i) b.classList.add('on'); muRow.appendChild(b); });
+if (!MU.length) muRow.innerHTML = '<span class="mut">没有对阵：bp h5 --matchup "A|B"</span>';
+seg(muRow, 'mu', v => { ps.mu = +v; ps.actions = []; renderPro(); });
+seg($('#sub-row'), 'sub', v => { ps.sub = v; renderPro(); });
+seg($('#first-row'), 'first', v => { ps.first = v; ps.actions = []; renderPro(); });
+$('#b-undo').onclick = () => { ps.actions.pop(); renderPro(); };
+$('#b-reset').onclick = () => { ps.actions = []; renderPro(); };
+combo($('#b-search'), $('#b-dd'), () => new Set(ps.actions), id => { if (ps.actions.length >= SEQ.length) return; ps.actions.push(id); renderBoard(); });
+const SEQ = L.cm_seq;
+const teamAt = i => ((SEQ[i][1] === 0) === (ps.first === 'us')) ? 'us' : 'them';
+function boardState() {
+  const st = {us: {p: [], b: []}, them: {p: [], b: []}};
+  ps.actions.forEach((h, i) => st[teamAt(i)][SEQ[i][0] ? 'p' : 'b'].push(h));
+  return st;
+}
+function boardRecs(m, st, step) {
+  const isPick = !!SEQ[step][0], team = teamAt(step), me = m[team], opp = m[team === 'us' ? 'them' : 'us'];
+  const used = new Set(ps.actions), mine = st[team].p, theirs = st[team === 'us' ? 'them' : 'us'].p;
+  const oppPickRate = {}; opp.picks.forEach(p => oppPickRate[p.id] = [p.rate, p.lift]);   // time-decayed, same as team_hero_stats
+  return L.heroes.filter(h => !used.has(h.id)).map(h => {
+    const parts = []; let score = 0;
+    if (isPick) {
+      const sig = me.sig[h.id] || 0; score += WP.our_signature * sig; if (sig) parts.push(`绝活 ${sig.toFixed(2)}`);
+      const r = ctxScore(h.id, mine, theirs); score += r.score; const d = ctxDetail(r); if (d) parts.push(d);
+      const st0 = L.stats[h.id]; if (st0) { score += 0.2 * Math.min(1, st0.rate / 0.3); }
+    } else {
+      // ban: their signature + their pick rate / win lift + how much this hero would counter what we already picked
+      const sig = opp.sig[h.id] || 0; score += WB.their_signature * sig; if (sig) parts.push(`对方绝活 ${sig.toFixed(2)}`);
+      const pr = oppPickRate[h.id]; if (pr) { score += WB.their_pick_rate * pr[0] + WB.their_win_lift * pr[1]; parts.push(`对方选用 ${(100 * pr[0]).toFixed(0)}% 胜率差 ${pt(pr[1])}`); }
+      const r = ctxScore(h.id, theirs, mine, true); score += r.score; const d = ctxDetail(r); if (d) parts.push('(若对方拿) ' + d);
+    }
+    return {id: h.id, name: h.name, score, detail: parts.join(' · ') || '—'};
+  }).sort((a, b) => b.score - a.score).slice(0, 10);
+}
+function renderBoard() {
+  const m = MU[ps.mu]; if (!m) return;
+  if (!SEQ.length) { $('#b-status').textContent = '该版本没有 Draft 格式数据（先跑 bp formats），看板不可用'; $('#b-seq').innerHTML = ''; $('#b-recs').innerHTML = ''; $('#b-search').disabled = true; return; }
+  const st = boardState(), step = ps.actions.length, done = step >= SEQ.length;
+  $('#b-us h4').textContent = m.us.name; $('#b-them h4').textContent = m.them.name;
+  chips($('#b-us-p'), st.us.p, 'ally'); chips($('#b-us-b'), st.us.b, 'ban'); chips($('#b-them-p'), st.them.p, 'enemy'); chips($('#b-them-b'), st.them.b, 'ban');
+  const seqEl = $('#b-seq'); seqEl.innerHTML = '';
+  SEQ.forEach(([p, t], i) => { const s = document.createElement('span'); s.className = teamAt(i) + (i < step ? ' done' : '') + (i === step ? ' cur' : ''); s.textContent = p ? 'P' : 'B'; s.title = i < step ? name(ps.actions[i]) : ''; seqEl.appendChild(s); });
+  $('#b-us').classList.toggle('turn', !done && teamAt(step) === 'us'); $('#b-them').classList.toggle('turn', !done && teamAt(step) === 'them');
+  $('#b-status').textContent = done ? 'Draft 完成' : `第 ${step + 1}/${SEQ.length} 手：${teamAt(step) === 'us' ? m.us.name : m.them.name} ${SEQ[step][0] ? 'Pick' : 'Ban'}`;
+  if (done) { $('#b-recs').innerHTML = ''; return; }
+  const team = teamAt(step);
+  $('#b-rec-title').textContent = (team === 'us' ? '我方' : '对方可能的') + (SEQ[step][0] ? ' Pick' : ' Ban');
+  recList($('#b-recs'), boardRecs(m, st, step), x => x.toFixed(2));
+}
+function renderPro() {
+  const m = MU[ps.mu];
+  $('#pro-report').style.display = ps.sub === 'report' ? '' : 'none'; $('#pro-board').style.display = ps.sub === 'board' ? '' : 'none';
+  if (!m) return;
+  if (ps.sub === 'report') $('#pro-report').innerHTML = m.report_html; else renderBoard();
+}
+renderPro();
+// deep links: #pro (report) / #board (draft board)
+if (location.hash === '#pro' || location.hash === '#board') {
+  $('#t-pro').classList.add('on'); $('#t-ladder').classList.remove('on'); $('#p-pro').classList.add('on'); $('#p-ladder').classList.remove('on');
+  if (location.hash === '#board') { ps.sub = 'board'; $('#sub-row button[data-sub=board]').classList.add('on'); $('#sub-row button[data-sub=report]').classList.remove('on'); renderPro(); }
+}
+$('#t-ladder').onclick = () => { $('#t-ladder').classList.add('on'); $('#t-pro').classList.remove('on'); $('#p-ladder').classList.add('on'); $('#p-pro').classList.remove('on'); };
+$('#t-pro').onclick = () => { $('#t-pro').classList.add('on'); $('#t-ladder').classList.remove('on'); $('#p-pro').classList.add('on'); $('#p-ladder').classList.remove('on'); };
+</script>
+</body>
+</html>
