@@ -8,7 +8,7 @@ from bp.db import connect
 from bp.draft_formats import infer_formats, load_format
 from bp.draft_state import DraftState
 from bp.normalize import normalize_match
-from bp.profiles import (load_frames, player_hero_stats, build_profile, ban_pressure, response_edges,
+from bp.profiles import (load_frames, player_hero_stats, build_profile, ban_pressure, response_edges, meta_ban_rates, signature_scores,
                          lookup_response, current_roster)
 from bp.quality import run_checks
 from bp.recommend import candidates
@@ -102,9 +102,16 @@ def test_profiles_and_signatures(league):
     # ban pressure: hero 30 is first-banned against A almost always
     bp = ban_pressure(fr, TEAM_A)
     assert int(bp.iloc[0].hero_id) == FIRST_BAN_VS_A and bp.iloc[0].phase0_rate > 0.35
-    # ban pressure flows into the signature components
-    h30 = A.stats[A.stats.hero_id == FIRST_BAN_VS_A]
-    assert len(h30) == 0 or h30.iloc[0].targeted_ban_pressure > 0.35
+    # every match in the league is A vs B, so the ban rate vs A equals the patch-wide rate: nothing is "targeted"
+    assert bp.iloc[0].global_phase0_rate == pytest.approx(bp.iloc[0].phase0_rate)
+    assert bp.iloc[0].targeted_lift == pytest.approx(0.0)
+    assert (A.stats.targeted_ban_pressure.abs() < 1e-9).all() and A.stats.tag.notna().all()
+    # regression: a roster hero absent from the team's ban table must keep its patch-wide rate (not collapse to 0)
+    gp0, _ = meta_ban_rates(fr)
+    st = signature_scores(stats[stats.account_id.isin(A_ACCTS)], fr, bp[bp.hero_id != FIRST_BAN_VS_A])
+    row = st[st.hero_id == FIRST_BAN_VS_A].iloc[0]
+    assert row.meta_ban_rate == pytest.approx(gp0[FIRST_BAN_VS_A]) and row.meta_ban_rate > 0.35
+    assert row.ban_rate_vs_team == 0 and row.targeted_ban_pressure == 0 and "meta" in row.tag
 
 
 def test_candidates_and_edges(league):
