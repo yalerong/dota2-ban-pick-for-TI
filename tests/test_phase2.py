@@ -178,3 +178,24 @@ def test_context_terms(league):
     off = candidates(fr, st, A, B, k=5, context=False)
     assert "counter" in on[0].components and "counter" not in off[0].components
     assert on[0].samples == off[0].samples  # evidence loop must not clobber the sample count
+
+
+def test_h5_page_builds(league, tmp_path):
+    import json, re
+    from bp.h5 import ladder_payload, matchup_payload, render, md_to_html
+    fr = load_frames(league, patch="7.41")
+    stats = player_hero_stats(fr)
+    A, B = build_profile(fr, TEAM_A, stats), build_profile(fr, TEAM_B, stats)
+    fmt = load_format(league, "7.41")
+    md = build_report(fr, A, B, fmt, "7.41", "testver")
+    lad = ladder_payload(fr, league, fmt, download_icons=False)
+    page = render(lad, [matchup_payload(fr, A, B, md)], {"patch": "7.41", "matches": 1, "as_of": "x", "data_version": "testver"})
+    data = json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>', page, re.S).group(1).replace("<\/", "</"))
+    assert len(data["ladder"]["cm_seq"]) == len(fmt) and data["ladder"]["counter"] and data["ladder"]["synergy"]
+    m = data["matchups"][0]
+    assert m["us"]["name"] == A.name and m["them"]["roster"] and str(FIRST_BAN_VS_A) in m["us"]["sig"]
+    assert "<details" in m["report_html"]
+    assert "opendota.com/matches/8960762254" in md_to_html("- x — 8960762254")   # real-looking ids become links
+    # markdown subset round-trips (nested lists close properly)
+    h = md_to_html("## S\n\n- a\n  - b\n- c\n")
+    assert h.count("<ul>") == h.count("</ul>") == 2 and h.count("<li>") == 3
