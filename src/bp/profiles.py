@@ -203,10 +203,10 @@ def signature_scores(stats: pd.DataFrame, fr: Frames, ban_pressure: pd.DataFrame
     if ban_pressure is not None and len(ban_pressure):
         bpi = ban_pressure.set_index("hero_id")
         s["ban_rate_vs_team"] = bpi.phase0_rate.reindex(s.hero_id).fillna(0).values
-        s["meta_ban_rate"] = bpi.global_phase0_rate.reindex(s.hero_id).fillna(0).values
     else:
         s["ban_rate_vs_team"] = 0.0
-        s["meta_ban_rate"] = 0.0
+    # patch-wide rate comes from the whole frame: a hero this team's opponents never ban must keep its real meta rate
+    s["meta_ban_rate"] = meta_ban_rates(fr)[0].reindex(s.hero_id).fillna(0).values
     # only the excess over the patch-wide ban rate counts as *targeted*; a meta hero banned against everyone scores 0 here
     s["targeted_ban_pressure"] = (s.ban_rate_vs_team - s.meta_ban_rate).clip(lower=0)
     s["role_adjusted_performance"] = 1.0
@@ -263,6 +263,16 @@ def current_roster(fr: Frames, team_id: int, n_games: int | None = None) -> list
 
 
 # ---------------------------------------------------------------- P2-03 targeted ban pressure
+def meta_ban_rates(fr: Frames) -> tuple[pd.Series, pd.Series]:
+    """Patch-wide decayed ban rates per hero over every match in the frame: (phase-0 rate, all-phase rate).
+    Independent of any team, so a hero never banned against a given team still keeps its real meta rate."""
+    allb = fr.events[fr.events.is_pick == 0]
+    all_games_w = fr.events.drop_duplicates("match_id").w.sum()
+    gp0 = allb[allb.phase == 0].groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+    gall = allb.groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+    return gp0, gall
+
+
 def ban_pressure(fr: Frames, team_id: int) -> pd.DataFrame:
     """Per hero: how often opponents ban it against this team (all phases / phase 0), decayed rates, sample ids."""
     e = team_draft(fr, team_id)
@@ -276,11 +286,7 @@ def ban_pressure(fr: Frames, team_id: int) -> pd.DataFrame:
     g["rate"] = g.bans_w / max(games_w, 1e-9)
     g["phase0_rate"] = g.phase0_w / max(games_w, 1e-9)
     g["games"] = games
-    # patch-wide ban rates (all matches in the frame) -> what a hero gets banned regardless of opponent
-    allb = fr.events[fr.events.is_pick == 0]
-    all_games_w = fr.events.drop_duplicates("match_id").w.sum()
-    gp0 = allb[allb.phase == 0].groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
-    gall = allb.groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+    gp0, gall = meta_ban_rates(fr)
     g["global_phase0_rate"] = gp0.reindex(g.hero_id).fillna(0).values
     g["global_rate"] = gall.reindex(g.hero_id).fillna(0).values
     g["targeted_lift"] = g.phase0_rate - g.global_phase0_rate
