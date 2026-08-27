@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from bp.db import connect
 
@@ -134,3 +135,39 @@ def test_blindtest_uses_inferred_patch_for_snapshot_and_live_query(tmp_path, mon
     assert "AND patch = ?" in seen["query"]
     assert seen["params"] == [2000, "7.41"]
     assert res["patch"] == "7.41"
+
+
+def test_blindtest_preserves_a_fixed_test_match_order(tmp_path, monkeypatch):
+    import bp.blindtest as blindtest
+
+    snap = connect(tmp_path / "snap.sqlite")
+    live = connect(tmp_path / "live.sqlite")
+    _insert_match(snap, 1, "7.41", 1000)
+    _insert_match(live, 11, "7.41", 2100)
+    _insert_match(live, 22, "7.41", 2200)
+    snap.commit()
+    live.commit()
+
+    class FakeFrames:
+        matches = pd.DataFrame({"start_time": [1000], "patch": ["7.41"]})
+        events = pd.DataFrame(columns=["phase", "is_pick", "hero_id", "w"])
+        teams = {100: "Rad", 200: "Dire"}
+
+    monkeypatch.setattr(blindtest, "load_frames", lambda *args, **kwargs: FakeFrames())
+    monkeypatch.setattr(blindtest, "load_format", lambda *args, **kwargs: ((0, 0),))
+    monkeypatch.setattr(blindtest, "player_hero_stats", lambda fr: {})
+
+    res = blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22, 11])
+
+    assert res["test_match_ids"] == [22, 11]
+    assert res["test_set_hash"]
+
+    with pytest.raises(ValueError, match="duplicates"):
+        blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[11, 11])
+    with pytest.raises(ValueError, match="unavailable or outside filters"):
+        blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[33])
+
+    live.execute("UPDATE matches SET radiant_team_id=300 WHERE match_id=22")
+    live.commit()
+    with pytest.raises(ValueError, match="teams absent from snapshot"):
+        blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22])

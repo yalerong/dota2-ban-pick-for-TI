@@ -3,13 +3,13 @@
 ## Protocol (frozen 2026-08-26)
 
 - **Snapshot**: `snapshot_20260801_<hash>` — profiles use only matches with `start_time < 2026-08-01`.
-- **Test set**: the first 120 clean 7.41 matches starting on/after 2026-08-01 whose two teams exist in the snapshot (2880 draft steps).
+- **Test set**: the 120 clean 7.41 matches in `docs/baseline-test-matches.json`, frozen from Run 1 in chronological order
+  (2880 draft steps; test-set hash `6d348cc4215c4225`).
 - **Metric**: hit rate of the actual pro action inside the model's Top-1/3/5, per slice; baseline = global meta frequency among legal heroes.
 - **Weights**: `config/scoring.yaml` as committed with this file. Weights are **not** tuned against this test set.
-- **Pending validation**: the 2026-08-26 run used a partial backfill (2577 clean matches total, fewer inside the snapshot).
-  When the 7.41 backfill completes, re-export the 2026-08-01 snapshot (more training data, same as_of), rerun
-  `bp blindtest --snapshot <new> --patch 7.41 --max 120` with and without `--no-context`, and append the tables below.
-  The question being tested: does more data raise the numbers, and do the context terms hold up at full sample size?
+- **Incremental validation**: each checkpoint re-exports the same 2026-08-01 cutoff and evaluates the frozen match IDs with and
+  without `--no-context`. New data may change the training snapshot and meta-frequency baseline, but never the evaluation matches.
+  The frozen test set is an acceptance holdout; model changes must first be developed on a separate set.
 
 ## Run 1 — 2026-08-26, partial backfill (2577 clean matches in DB)
 
@@ -69,4 +69,59 @@ against everyone no longer inflates a player's signature. Context terms ON.
 The change is about *what the score means*, not accuracy: e.g. Yatoro's Lone Druid went from "banned 25% -> signature"
 to "meta hero (51% banned patch-wide), not targeted", while Drow Ranger stays targeted (+21pt over meta).
 
-Any future Policy model must beat the **model** column on the same snapshot before promotion.
+## Run 2 — 2026-08-27, incremental checkpoint (5355 clean matches in DB)
+
+Snapshot `98ead296cc1f3808` contains 4991 clean pre-cutoff matches, up from roughly 2200 in Run 1. The fixed test set is
+`6d348cc4215c4225`; no weights changed between runs.
+
+### Context terms ON
+
+| slice | steps | top1 | top3 | top5 |
+|---|---|---|---|---|
+| overall | 2880 | 8.8% / 5.3% | 21.7% / 12.2% | 30.7% / 18.8% |
+| bans | 1680 | 9.1% / 7.4% | 23.4% / 13.0% | 32.3% / 19.7% |
+| picks | 1200 | 8.4% / 2.5% | 19.4% / 11.0% | 28.3% / 17.4% |
+| phase0_ban | 840 | 11.0% / 9.8% | 28.7% / 14.4% | 38.6% / 24.6% |
+| phase1_pick | 240 | 11.7% / 2.1% | 33.8% / 8.8% | 43.8% / 17.5% |
+| phase2_ban | 360 | 7.5% / 2.2% | 19.7% / 10.6% | 28.1% / 12.2% |
+| phase3_pick | 720 | 9.0% / 2.4% | 18.1% / 12.2% | 27.1% / 19.4% |
+| phase4_ban | 480 | 7.1% / 7.1% | 16.9% / 12.5% | 24.6% / 16.7% |
+| phase5_pick | 240 | 3.3% / 3.3% | 9.2% / 9.6% | 16.7% / 11.2% |
+
+### Context terms OFF
+
+| slice | steps | top1 | top3 | top5 |
+|---|---|---|---|---|
+| overall | 2880 | 9.1% / 5.3% | 21.5% / 12.2% | 30.6% / 18.8% |
+| bans | 1680 | 9.2% / 7.4% | 22.4% / 13.0% | 31.4% / 19.7% |
+| picks | 1200 | 8.8% / 2.5% | 20.2% / 11.0% | 29.5% / 17.4% |
+| phase0_ban | 840 | 11.0% / 9.8% | 28.7% / 14.4% | 38.6% / 24.6% |
+| phase1_pick | 240 | 12.5% / 2.1% | 35.0% / 8.8% | 42.5% / 17.5% |
+| phase2_ban | 360 | 10.0% / 2.2% | 19.2% / 10.6% | 30.0% / 12.2% |
+| phase3_pick | 720 | 9.6% / 2.4% | 19.0% / 12.2% | 29.7% / 19.4% |
+| phase4_ban | 480 | 5.6% / 7.1% | 14.0% / 12.5% | 20.0% / 16.7% |
+| phase5_pick | 240 | 2.9% / 3.3% | 8.8% / 9.6% | 15.8% / 11.2% |
+
+### Top-3 comparison
+
+| slice | Run 1b ON | Run 2 ON | Run 2 − Run 1b | Run 2 OFF | ON − OFF |
+|---|---:|---:|---:|---:|---:|
+| overall | 21.7% | 21.7% | 0.0pt | 21.5% | +0.2pt |
+| bans | 22.6% | 23.4% | +0.8pt | 22.4% | +1.0pt |
+| picks | 20.4% | 19.4% | -1.0pt | 20.2% | -0.8pt |
+| phase0_ban | 26.8% | 28.7% | +1.9pt | 28.7% | 0.0pt |
+| phase1_pick | 35.0% | 33.8% | -1.2pt | 35.0% | -1.2pt |
+| phase2_ban | 20.0% | 19.7% | -0.3pt | 19.2% | +0.5pt |
+| phase3_pick | 18.8% | 18.1% | -0.7pt | 19.0% | -0.9pt |
+| phase4_ban | 17.1% | 16.9% | -0.2pt | 14.0% | +2.9pt |
+| phase5_pick | 10.8% | 9.2% | -1.6pt | 8.8% | +0.4pt |
+
+**Read**: doubling the pre-cutoff training sample did not improve overall Top-3. Bans improved by 0.8pt, while picks fell by
+1.0pt. The context ablation repeated the earlier pattern: context helps bans (+1.0pt overall and +2.9pt in phase 4) but
+hurts picks (-0.8pt). Last-phase picks remain below the current meta baseline (9.2% vs 9.6%). The meta baseline changed because
+its training frequencies changed; the 120 evaluation matches did not. No weights were changed or promoted from this result.
+
+Next experiment: use a separate development match set to test action-specific context handling. Keep this frozen set untouched
+until a candidate is selected, then require it to beat the Run 2 model column before promotion.
+
+Any future Policy model must beat the **Run 2 model** column on this fixed test set before promotion.

@@ -243,8 +243,12 @@ def cmd_blindtest(a):
     snap = sqlite3.connect(a.snapshot); snap.row_factory = sqlite3.Row
     as_of = int(snap.execute("SELECT value FROM meta WHERE key='as_of_ts'").fetchone()[0])
     live = _con(a)
+    test_match_ids = None
+    if a.test_matches:
+        raw = json.loads(Path(a.test_matches).read_text(encoding="utf-8"))
+        test_match_ids = raw["match_ids"] if isinstance(raw, dict) else raw
     res = blind_test(snap, live, as_of, until=_ts(a.until), patch=a.patch, league=a.league, max_matches=a.max,
-                     context=not a.no_context)
+                     context=not a.no_context, test_match_ids=test_match_ids)
     md = to_markdown(res, _data_version(snap))
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
@@ -287,6 +291,7 @@ def main(argv=None):
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
     s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms"); s.set_defaults(f=cmd_blindtest)
+    s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) fixing the evaluation match order")
 
     a = p.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):   # player names contain non-GBK glyphs; never crash on a Windows console

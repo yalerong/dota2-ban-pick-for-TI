@@ -35,7 +35,7 @@ bp teams --q spirit                                   # resolve team ids / names
 bp report --us "Team Spirit" --them "Team Liquid"     # -> reports/<us>-vs-<them>-<patch>.md
 bp draft  --us "Team Spirit" --them "Team Liquid" --first them   # interactive board; hero names, undo, state, quit
 bp --db data/snapshots/snapshot_20260801_<hash>.sqlite report --us ... --them ...   # as-of analysis on a frozen snapshot
-bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --out docs/baseline.md
+bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --test-matches docs/baseline-test-matches.json --out docs/baseline.md
 ```
 
 All scores are linear combinations of explainable statistics; weights live in `config/scoring.yaml`.
