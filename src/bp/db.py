@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS teams (
 );
 CREATE TABLE IF NOT EXISTS roster_snapshots (
   match_id INTEGER, team_id INTEGER, account_id INTEGER, player_slot INTEGER, side INTEGER,
-  hero_id INTEGER, lane_role INTEGER, gpm INTEGER, position_est INTEGER,
+  hero_id INTEGER, lane_role INTEGER, gpm INTEGER, position_est INTEGER, player_name TEXT,
   PRIMARY KEY (match_id, player_slot)
 );
 CREATE INDEX IF NOT EXISTS ix_roster_acct ON roster_snapshots(account_id);
@@ -58,4 +58,7 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con = sqlite3.connect(p)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    columns = {r[1] for r in con.execute("PRAGMA table_info(roster_snapshots)")}
+    if "player_name" not in columns:
+        con.execute("ALTER TABLE roster_snapshots ADD COLUMN player_name TEXT")
     return con

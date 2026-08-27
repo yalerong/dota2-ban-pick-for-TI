@@ -27,6 +27,8 @@ def sync_index(client: OpenDota, con: sqlite3.Connection, since_ts: int | None =
             break
         new = 0
         for m in page:
+            if since_ts is not None and m.get("start_time", 0) < since_ts:
+                continue
             vals = [m.get(c) for c in INDEX_COLS]
             vals[11] = None if m.get("radiant_win") is None else int(m["radiant_win"])
             cur = con.execute(

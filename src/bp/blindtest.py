@@ -25,9 +25,18 @@ def _global_baseline(fr: Frames) -> dict:
 def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, until: int | None = None,
                patch: str | None = None, league: int | None = None, max_matches: int = 150, ks=(1, 3, 5),
                context: bool = True) -> dict:
+    if patch is None:
+        r = snap.execute(
+            """SELECT patch FROM matches
+               WHERE excluded=0 AND start_time < ?
+               GROUP BY patch ORDER BY COUNT(*) DESC, patch DESC LIMIT 1""",
+            (as_of,),
+        ).fetchone()
+        patch = r[0] if r else None
+    assert patch, "no patch available in snapshot before as_of"
     fr = load_frames(snap, as_of=as_of, patch=patch)
     assert int(fr.matches.start_time.max()) < as_of, "snapshot leaks matches at/after as_of"
-    fmt_patch = patch or fr.matches.patch.mode().iloc[0]
+    fmt_patch = patch
     fmt = load_format(snap, fmt_patch)
     assert fmt, f"no draft format for {fmt_patch} in snapshot"
     stats = player_hero_stats(fr)
@@ -37,8 +46,7 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
     args: list = [as_of]
     if until:
         q += " AND start_time < ?"; args.append(until)
-    if patch:
-        q += " AND patch = ?"; args.append(patch)
+    q += " AND patch = ?"; args.append(fmt_patch)
     if league:
         q += " AND leagueid = ?"; args.append(league)
     tests = pd.read_sql_query(q + " ORDER BY start_time", live, params=args)

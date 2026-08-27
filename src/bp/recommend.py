@@ -57,7 +57,7 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
     my_picks, their_picks = state.picks(acting), state.picks(1 - acting)
     weights = {**w, "counter": cw.get("counter", 0), "synergy": cw.get("synergy", 0), "gap": cw.get("gap", 0)}
     out: list[Candidate] = []
-    for h in state.legal():
+    for h in sorted(state.legal()):
         comps: dict[str, float] = {}
         ev: list[str] = []
         mids: list[int] = []
@@ -72,11 +72,13 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
             if bp is not None and bp.bans:
                 ev.append(f"{fr.hero(h)} banned against us {int(bp.bans)}x in {int(bp.games)} games ({int(bp.phase0)} in phase 1)")
                 mids += list(bp.match_ids)
+                n = max(n, int(bp.bans))
             hs = my_hs.loc[h] if my_hs is not None and h in my_hs.index else None
             comps["our_pick_rate"] = float(hs.pick_rate) if hs is not None else 0.0
             comps["our_win_lift"] = float(hs.win_lift) if hs is not None else 0.0
             if hs is not None:
                 ev.append(f"we picked {fr.hero(h)} {int(hs.picks)}x, {int(hs.wins)} wins (smoothed {_fmt_pct(hs.wr)})")
+                mids += list(hs.match_ids)
                 n = max(n, int(hs.picks))
         else:
             s, row = opp.sig(h)
@@ -92,6 +94,8 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
             bp = their_bp.loc[h] if their_bp is not None and h in their_bp.index else None
             if bp is not None and bp.bans:
                 ev.append(f"{fr.hero(h)} banned against them {int(bp.bans)}x in {int(bp.games)} games")
+                mids += list(bp.match_ids)
+                n = max(n, int(bp.bans))
             ob = my_bans.loc[h] if my_bans is not None and h in my_bans.index else None
             comps["our_ban_habit"] = float(ob.rate) if ob is not None else 0.0
             if ob is not None:
@@ -118,7 +122,7 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
         out.append(Candidate(h, fr.hero(h), "pick" if is_pick else "ban", score, conf, n, ev,
                              sorted(set(int(m) for m in mids), reverse=True)[:6], comps,
                              insufficient=n < cfg["evidence"]["min_samples"]))
-    out.sort(key=lambda c: -c.score)
+    out.sort(key=lambda c: (-c.score, c.hero_id))
     top = out[:k]
     # predicted opponent response for the top candidates (opponent = the team NOT acting)
     for c in top:

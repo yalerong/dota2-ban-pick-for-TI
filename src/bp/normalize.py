@@ -96,15 +96,15 @@ def normalize_match(con: sqlite3.Connection, m: dict, index_row: sqlite3.Row | N
         pos = {id(p): i + 1 for i, p in enumerate(ranked)}
         for p in plist:
             acct = p.get("account_id")
+            pname = p.get("name") or p.get("personaname")
             con.execute(
                 """INSERT OR REPLACE INTO roster_snapshots
-                   (match_id, team_id, account_id, player_slot, side, hero_id, lane_role, gpm, position_est)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (match_id, team_id, account_id, player_slot, side, hero_id, lane_role, gpm, position_est, player_name)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (mid, team_id, acct, int(p.get("player_slot", 0)), side, p.get("hero_id"),
-                 p.get("lane_role"), p.get("gold_per_min"), pos[id(p)]))
+                 p.get("lane_role"), p.get("gold_per_min"), pos[id(p)], pname))
             if acct:
                 row = con.execute("SELECT name, last_seen FROM players WHERE account_id=?", (acct,)).fetchone()
-                pname = p.get("name") or p.get("personaname")
                 if row is None or start_time >= (row["last_seen"] or 0):
                     con.execute("INSERT OR REPLACE INTO players (account_id, name, last_seen) VALUES (?,?,?)",
                                 (acct, pname or (row["name"] if row else None), max(start_time, row["last_seen"] or 0) if row else start_time))
