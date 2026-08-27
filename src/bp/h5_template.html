@@ -66,23 +66,23 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
       <button data-pos="0" class="on">不限</button><button data-pos="1">1</button><button data-pos="2">2</button><button data-pos="3">3</button><button data-pos="4">4</button><button data-pos="5">5</button>
     </div>
     <div class="row seg" style="margin-top:6px" id="mode-row">
-      <button data-mode="ally" class="on">加到我方</button><button data-mode="enemy">加到敌方</button><button data-mode="ban">标记禁用</button>
+      <button data-mode="enemy" class="on">对面选了</button><button data-mode="ally">我方选了</button><button data-mode="ban">已禁用</button>
     </div>
   </div>
   <div class="card">
-    <div class="row" style="justify-content:space-between"><span>我方</span><button id="l-clear" style="padding:4px 10px;font-size:12px">清空</button></div>
-    <div class="chips" id="l-ally"></div>
-    <div style="margin-top:6px">敌方</div><div class="chips" id="l-enemy"></div>
+    <div class="row" style="justify-content:space-between"><span>对面已选</span><button id="l-clear" style="padding:4px 10px;font-size:12px">清空</button></div>
+    <div class="chips" id="l-enemy"></div>
+    <div style="margin-top:6px">我方已选</div><div class="chips" id="l-ally"></div>
     <div style="margin-top:6px" class="mut">禁用</div><div class="chips" id="l-ban"></div>
-    <div class="mut" style="margin-top:4px">点芯片可移除</div>
+    <div class="mut" style="margin-top:4px">先按上面选好是给谁加，再在最下方网格点英雄；推荐自动更新，点芯片可移除</div>
+  </div>
+  <div class="card" id="l-rec-card">
+    <div class="row" style="justify-content:space-between"><b>推荐</b><span class="mut">克制×<span id="w-c"></span> 协同×<span id="w-s"></span> 补位×<span id="w-g"></span></span></div>
+    <div id="l-recs"></div>
   </div>
   <div class="card">
     <input id="l-search" placeholder="搜英雄（英文名，支持首字母）" autocomplete="off">
     <div class="grid" id="l-grid" style="margin-top:8px"></div>
-  </div>
-  <div class="card">
-    <div class="row" style="justify-content:space-between"><b>推荐</b><span class="mut">克制×<span id="w-c"></span> 协同×<span id="w-s"></span> 补位×<span id="w-g"></span></span></div>
-    <div id="l-recs"></div>
   </div>
 </div>
 
@@ -168,7 +168,7 @@ function recList(el, recs, fmt) {
 }
 
 // ====================================================== ladder
-const ls = {pos: 0, mode: 'ally', ally: [], enemy: [], ban: [], q: ''};
+const ls = {pos: 0, mode: 'enemy', ally: [], enemy: [], ban: [], q: ''};
 $('#ladder-meta').textContent = `数据：${D.meta.patch} 职业赛 ${D.meta.matches} 场（截至 ${D.meta.as_of}）。克制/协同来自职业赛，天梯只作参考。`;
 $('#w-c').textContent = W.counter; $('#w-s').textContent = W.synergy; $('#w-g').textContent = W.gap;
 seg($('#pos-row'), 'pos', v => { ls.pos = +v; renderLadder(); });
@@ -181,11 +181,18 @@ function ladderRecs() {
   return L.heroes.filter(h => !used.has(h.id)).map(h => {
     const st = L.stats[h.id] || {wr: .5, pos: [0, 0, 0, 0, 0], rate: 0};
     const r = ctxScore(h.id, ls.ally, ls.enemy);
+    // role-gap only means something once most of the lineup is known: scale by known allies (0/4 .. 4/4)
+    const gapScale = Math.min(1, ls.ally.length / 4); r.score -= W.gap * r.g * (1 - gapScale); r.g *= gapScale;
     // meta term: pick share at my position (scaled so the top hero ≈ +10pt), or overall pick rate when "any"
     const meta = ls.pos ? 0.1 * st.pos[ls.pos - 1] / (posMax || 1) : 0.1 * Math.min(1, st.rate / 0.3);
     const wr = st.wr - 0.5;
-    const parts = [`位置/热度 ${pt(meta)}`, `胜率 ${pt(wr)}<small>(${st.n})</small>`, ctxDetail(r)].filter(Boolean);
-    return {id: h.id, name: h.name, score: r.score + meta + wr, detail: parts.join(' · '), posShare: ls.pos ? st.pos[ls.pos - 1] : 1};
+    const vs = r.cd.map(([o, e, n]) => `${name(o)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`).join(' · ');
+    const fit = r.sd.map(([m, e, n]) => `${name(m)} <span class="${cls(e)}">${pt(e)}</span><small>(${n})</small>`).concat(r.gd.length ? ['补 ' + r.gd.join('/')] : []).join(' · ');
+    const lines = [];
+    if (vs) lines.push(`克制对面 <b class="${cls(r.c)}">${pt(W.counter * r.c)}</b>：${vs}`);
+    if (fit) lines.push(`适配我方 <b class="${cls(r.s)}">${pt(W.synergy * r.s + W.gap * r.g)}</b>：${fit}`);
+    lines.push(`热度 ${pt(meta)} · 胜率 ${pt(wr)}<small>(${st.n})</small>`);
+    return {id: h.id, name: h.name, score: r.score + meta + wr, detail: lines.join('<br>'), posShare: ls.pos ? st.pos[ls.pos - 1] : 1};
   }).filter(r => r.posShare >= 0.01).sort((a, b) => b.score - a.score).slice(0, 12);
 }
 function renderLadder() {
@@ -193,8 +200,9 @@ function renderLadder() {
   chips($('#l-enemy'), ls.enemy, 'enemy', id => { ls.enemy = ls.enemy.filter(x => x !== id); renderLadder(); });
   chips($('#l-ban'), ls.ban, 'ban', id => { ls.ban = ls.ban.filter(x => x !== id); renderLadder(); });
   const used = new Set([...ls.ally, ...ls.enemy, ...ls.ban]);
-  heroGrid($('#l-grid'), ls.q, used, id => { if (ls.mode === 'ally' && ls.ally.length >= 5) return; if (ls.mode === 'enemy' && ls.enemy.length >= 5) return; ls[ls.mode].push(id); ls.q = ''; $('#l-search').value = ''; renderLadder(); });
-  recList($('#l-recs'), ladderRecs());
+  heroGrid($('#l-grid'), ls.q, used, id => { if (ls.mode === 'ally' && ls.ally.length >= 5) return; if (ls.mode === 'enemy' && ls.enemy.length >= 5) return; ls[ls.mode].push(id); ls.q = ''; $('#l-search').value = ''; renderLadder(); $('#l-rec-card').scrollIntoView({behavior: 'smooth', block: 'start'}); });
+  if (ls.ally.length + ls.enemy.length) recList($('#l-recs'), ladderRecs());
+  else $('#l-recs').innerHTML = '<div class="mut">先选你的位置，再点对面已选 / 我方已选的英雄，这里会给出兼顾克制与适配的推荐</div>';
 }
 renderLadder();
 
