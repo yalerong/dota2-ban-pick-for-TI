@@ -161,10 +161,10 @@ def cmd_report(a):
 
 
 def cmd_h5(a):
-    """Single-file mobile page: ladder helper + one section per --matchup "Us|Them"."""
+    """Single-file mobile page: ladder helper + an offline library of selectable professional teams."""
     from .profiles import load_frames, build_profile, player_hero_stats
     from .report import build_report
-    from .h5 import ladder_payload, matchup_payload, render
+    from .h5 import _team_payload, ladder_payload, matchup_payload, render
     con = _con(a)
     # pin the patch before loading: the page is labelled with one patch, so every number on it must come from that patch
     patch = a.patch or _default_patch(con, _ts(a.as_of))
@@ -174,21 +174,31 @@ def cmd_h5(a):
         print(f"warning: no draft format for patch {patch}; the Draft Board will be disabled (run `bp formats`)", file=sys.stderr)
     stats = player_hero_stats(fr)
     matchups = []
+    profiles = {}
+
+    def profile(query):
+        team_id = fr.team_id(query)
+        if team_id is None:
+            sys.exit(f"team not found: {query!r} (try `bp teams --q NAME`)")
+        if team_id not in profiles:
+            profiles[team_id] = build_profile(fr, team_id, stats)
+        return profiles[team_id]
+
+    for query in a.team or []:
+        profile(query.strip())
     for spec in a.matchup or []:
         if "|" not in spec:
             sys.exit(f'--matchup expects "Us|Them", got {spec!r}')
         us_q, them_q = (x.strip() for x in spec.split("|", 1))
-        us, them = fr.team_id(us_q), fr.team_id(them_q)
-        if us is None or them is None:
-            sys.exit(f"team not found: us={us_q}->{us} them={them_q}->{them} (try `bp teams --q NAME`)")
-        pu, pt = build_profile(fr, us, stats), build_profile(fr, them, stats)
+        pu, pt = profile(us_q), profile(them_q)
         matchups.append(matchup_payload(fr, pu, pt, build_report(fr, pu, pt, fmt, patch, _data_version(con))))
     meta = {"patch": patch or "all", "matches": int(len(fr.matches)),
             "as_of": datetime.fromtimestamp(fr.as_of, timezone.utc).strftime("%Y-%m-%d"), "data_version": _data_version(con) or "live-db"}
     out = Path(a.out) if a.out else CONFIG.root / "h5" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta), encoding="utf-8")
-    print(f"wrote {out} ({out.stat().st_size // 1024} KB, {len(matchups)} matchups)")
+    team_payloads = [_team_payload(fr, p) for p in profiles.values()]
+    out.write_text(render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta, team_payloads), encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size // 1024} KB, {len(team_payloads)} teams, {len(matchups)} full reports)")
     print(f"phone on the same Wi-Fi: python -m http.server 8000 -d \"{out.parent}\"  then open http://<this-pc-ip>:8000/")
 
 
@@ -247,8 +257,9 @@ def cmd_blindtest(a):
     if a.test_matches:
         raw = json.loads(Path(a.test_matches).read_text(encoding="utf-8"))
         test_match_ids = raw["match_ids"] if isinstance(raw, dict) else raw
+    context_actions = {"all": ("ban", "pick"), "ban": ("ban",), "pick": ("pick",), "none": ()}[a.context_actions]
     res = blind_test(snap, live, as_of, until=_ts(a.until), patch=a.patch, league=a.league, max_matches=a.max,
-                     context=not a.no_context, test_match_ids=test_match_ids)
+                     context=not a.no_context, test_match_ids=test_match_ids, context_actions=context_actions)
     md = to_markdown(res, _data_version(snap))
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
@@ -286,11 +297,15 @@ def main(argv=None):
         s.set_defaults(f=fn)
     s = sp.add_parser("h5", help="single-file mobile page (ladder helper + pro BP report/board)")
     s.add_argument("--matchup", action="append", metavar="US|THEM", help='repeatable, e.g. --matchup "Team Spirit|Team Liquid"')
+    s.add_argument("--team", action="append", help="repeatable team to include in the offline professional-training selector")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
-    s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms"); s.set_defaults(f=cmd_blindtest)
+    s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms")
+    s.add_argument("--context-actions", choices=["all", "ban", "pick", "none"], default="all",
+                   help="where to apply counter/synergy/gap terms; --no-context still forces none")
+    s.set_defaults(f=cmd_blindtest)
     s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) fixing the evaluation match order")
 
     a = p.parse_args(argv)

@@ -4,6 +4,7 @@ reports/
 __pycache__/
 *.pyc
 .pytest_cache/
+.omx/
 *.egg-info/
 build/
 dist/

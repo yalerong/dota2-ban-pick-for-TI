@@ -125,3 +125,22 @@ Next experiment: use a separate development match set to test action-specific co
 until a candidate is selected, then require it to beat the Run 2 model column before promotion.
 
 Any future Policy model must beat the **Run 2 model** column on this fixed test set before promotion.
+
+## Run 3 — 2026-08-27, independent development set
+
+Snapshot `58e7a04b5d620dcd` contains 6585 clean pre-cutoff matches. The independent development set is the 120-match
+`c8b39c666b2141bc` list in `docs/development-test-matches.json`; it has no overlap with the frozen acceptance set.
+
+The action-specific experiment compared context on every action, no context, and context on bans only:
+
+| mode | dev overall Top-3 | dev bans Top-3 | dev picks Top-3 | dev overall Top-5 |
+|---|---:|---:|---:|---:|
+| all actions | 16.2% | 18.9% | 12.5% | 24.0% |
+| bans only | 16.2% | 18.9% | 12.5% | 24.1% |
+| off | 15.7% | 18.0% | 12.5% | 23.9% |
+
+The bans-only candidate was not clearly better on development data, but was carried to the frozen acceptance set once because
+it preserved Top-3 and slightly improved Top-5. On acceptance, all-actions vs bans-only was 21.5% vs 21.5% Top-3 and 30.2%
+vs 30.4% Top-5; Top-1 moved 9.0% to 8.9%. The new snapshot's all-actions Top-3 (21.5%) also remains just below Run 2
+(21.7%), so neither the checkpoint nor bans-only mode is promoted. The code retains the action-specific switch for future
+experiments; production behavior remains context on all actions.

@@ -171,3 +171,53 @@ def test_blindtest_preserves_a_fixed_test_match_order(tmp_path, monkeypatch):
     live.commit()
     with pytest.raises(ValueError, match="teams absent from snapshot"):
         blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22])
+
+
+def test_blindtest_cli_context_actions_and_markdown_labels(tmp_path, monkeypatch, capsys):
+    import bp.__main__ as cli
+    import bp.blindtest as blindtest
+
+    snap_path = tmp_path / "snap.sqlite"
+    live_path = tmp_path / "live.sqlite"
+    snap = connect(snap_path)
+    connect(live_path).close()
+    snap.execute("INSERT INTO meta VALUES (?,?)", ("as_of_ts", "2000"))
+    snap.commit()
+    snap.close()
+
+    seen = {}
+
+    def fake_blind_test(*args, **kwargs):
+        mode = blindtest.context_mode(kwargs["context"], kwargs["context_actions"])
+        seen["context"] = kwargs["context"]
+        seen["context_actions"] = kwargs["context_actions"]
+        return {
+            "as_of": 2000,
+            "patch": "7.41",
+            "context": bool(mode["actions"]),
+            "context_mode": mode,
+            "test_matches": 0,
+            "test_set_hash": "empty",
+            "steps": 0,
+            "overall": {"model": {"n": 0}, "baseline": {"n": 0}},
+            "bans": {"model": {"n": 0}, "baseline": {"n": 0}},
+            "picks": {"model": {"n": 0}, "baseline": {"n": 0}},
+            "by_phase": {},
+        }
+
+    monkeypatch.setattr(blindtest, "blind_test", fake_blind_test)
+
+    cli.main(["--db", str(live_path), "blindtest", "--snapshot", str(snap_path), "--context-actions", "ban"])
+    out = capsys.readouterr().out
+    assert seen == {"context": True, "context_actions": ("ban",)}
+    assert "context terms BAN ONLY" in out
+    assert "Machine context_mode: `ban`" in out
+
+    cli.main([
+        "--db", str(live_path), "blindtest", "--snapshot", str(snap_path), "--context-actions", "pick",
+        "--no-context",
+    ])
+    out = capsys.readouterr().out
+    assert seen == {"context": False, "context_actions": ("pick",)}
+    assert "context terms OFF" in out
+    assert "Machine context_mode: `none`" in out
