@@ -145,6 +145,19 @@ class OpenDota:
         return self.get_cached("/proMatches", str(less_than_match_id),
                                {"less_than_match_id": less_than_match_id}) or []
 
+    def public_matches_page(self, less_than_match_id: int | None = None, min_rank: int | None = None,
+                            max_rank: int | None = None) -> list[dict]:
+        """One page (100 rows) of /publicMatches, newest first. Not cached: the unbounded page changes every minute
+        and bounded pages are consumed exactly once by scripts/pull_public.py, which keeps its own cursor."""
+        params: dict = {}
+        if less_than_match_id is not None:
+            params["less_than_match_id"] = int(less_than_match_id)
+        if min_rank is not None:
+            params["min_rank"] = int(min_rank)
+        if max_rank is not None:
+            params["max_rank"] = int(max_rank)
+        return self._get("/publicMatches", params) or []
+
     def match(self, match_id: int) -> dict | None:
         return self.get_cached("/matches", str(match_id), path=f"/matches/{int(match_id)}")
 
