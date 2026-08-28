@@ -274,6 +274,27 @@ def test_context_terms(league):
     assert on[0].samples == off[0].samples  # evidence loop must not clobber the sample count
 
 
+def test_context_actions_can_apply_only_to_bans(league):
+    fr = load_frames(league, patch="7.41")
+    stats = player_hero_stats(fr)
+    A, B = build_profile(fr, TEAM_A, stats), build_profile(fr, TEAM_B, stats)
+
+    ban_state = DraftState(((1, 0), (1, 1), (0, 0)), frozenset(fr.heroes))
+    ban_state.apply(31).apply(41)
+    ban_only = candidates(fr, ban_state, A, B, k=5, context_actions={"ban"})
+    ban_off = candidates(fr, ban_state, A, B, k=5, context=False)
+    assert "counter" in ban_only[0].components
+    assert "counter" not in ban_off[0].components
+
+    pick_state = DraftState(((1, 0), (1, 1), (1, 0)), frozenset(fr.heroes))
+    pick_state.apply(31).apply(41)
+    pick_ban_only = candidates(fr, pick_state, A, B, k=5, context_actions={"ban"})
+    pick_off = candidates(fr, pick_state, A, B, k=5, context=False)
+    assert [(c.hero_id, c.score, c.components) for c in pick_ban_only] == [
+        (c.hero_id, c.score, c.components) for c in pick_off
+    ]
+
+
 def test_h5_page_builds(league, tmp_path):
     import json, re
     from bp.h5 import ladder_payload, matchup_payload, render, md_to_html
@@ -284,8 +305,11 @@ def test_h5_page_builds(league, tmp_path):
     md = build_report(fr, A, B, fmt, "7.41", "testver")
     lad = ladder_payload(fr, league, fmt, download_icons=False)
     page = render(lad, [matchup_payload(fr, A, B, md)], {"patch": "7.41", "matches": 1, "as_of": "x", "data_version": "testver"})
-    data = json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>', page, re.S).group(1).replace("<\/", "</"))
+    data = json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>', page, re.S).group(1).replace(r"<\/", "</"))
     assert len(data["ladder"]["cm_seq"]) == len(fmt) and data["ladder"]["counter"] and data["ladder"]["synergy"]
+    assert {t["id"] for t in data["teams"]} == {TEAM_A, TEAM_B}
+    assert 'id="us-team"' in page and 'id="them-team"' in page and 'id="swap-teams"' in page
+    assert "const esc =" in page and "离线包至少需要 2 支战队" in page
     m = data["matchups"][0]
     assert m["us"]["name"] == A.name and m["them"]["roster"] and str(FIRST_BAN_VS_A) in m["us"]["sig"]
     assert "<details" in m["report_html"]

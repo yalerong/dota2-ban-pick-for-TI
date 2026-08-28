@@ -1,5 +1,7 @@
 """End-to-end blind test (P2-10): profiles from an as-of snapshot, replay later real drafts, measure Top-k hit rate."""
 from __future__ import annotations
+import hashlib
+import json
 import logging
 import sqlite3
 from collections import Counter, defaultdict
@@ -9,9 +11,22 @@ import pandas as pd
 from .draft_formats import load_format
 from .draft_state import DraftState
 from .profiles import Frames, build_profile, load_frames, player_hero_stats
-from .recommend import candidates
+from .recommend import candidates, normalize_context_actions
 
 log = logging.getLogger(__name__)
+
+DEFAULT_MAX_MATCHES = 150   # cap for auto-selected test matches; a fixed --test-matches list is never truncated
+
+
+def context_mode(context: bool = True, context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> dict:
+    actions = normalize_context_actions(context, context_actions)
+    if actions == {"ban", "pick"}:
+        return {"key": "all", "label": "ALL", "actions": ["ban", "pick"]}
+    if actions == {"ban"}:
+        return {"key": "ban", "label": "BAN ONLY", "actions": ["ban"]}
+    if actions == {"pick"}:
+        return {"key": "pick", "label": "PICK ONLY", "actions": ["pick"]}
+    return {"key": "none", "label": "OFF", "actions": []}
 
 
 def _global_baseline(fr: Frames) -> dict:
@@ -23,8 +38,9 @@ def _global_baseline(fr: Frames) -> dict:
 
 
 def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, until: int | None = None,
-               patch: str | None = None, league: int | None = None, max_matches: int = 150, ks=(1, 3, 5),
-               context: bool = True) -> dict:
+               patch: str | None = None, league: int | None = None, max_matches: int | None = None, ks=(1, 3, 5),
+               context: bool = True, test_match_ids: list[int] | None = None,
+               context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> dict:
     if patch is None:
         r = snap.execute(
             """SELECT patch FROM matches
@@ -41,6 +57,7 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
     assert fmt, f"no draft format for {fmt_patch} in snapshot"
     stats = player_hero_stats(fr)
     baseline = _global_baseline(fr)
+    mode = context_mode(context, context_actions)
 
     q = "SELECT match_id, patch, start_time, radiant_team_id, dire_team_id, league_name FROM matches WHERE excluded=0 AND start_time >= ?"
     args: list = [as_of]
@@ -49,9 +66,30 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
     q += " AND patch = ?"; args.append(fmt_patch)
     if league:
         q += " AND leagueid = ?"; args.append(league)
+    fixed_ids = [int(mid) for mid in test_match_ids] if test_match_ids is not None else None
+    if fixed_ids is not None:
+        if not fixed_ids:
+            raise ValueError("fixed test match ids are empty")
+        if len(set(fixed_ids)) != len(fixed_ids):
+            raise ValueError("fixed test match ids contain duplicates")
+        if max_matches is not None and len(fixed_ids) > max_matches:
+            raise ValueError(f"fixed test set has {len(fixed_ids)} matches but max_matches={max_matches}; "
+                             "a fixed set is evaluated in full - raise the limit or omit it")
+        q += f" AND match_id IN ({','.join('?' * len(fixed_ids))})"
+        args.extend(fixed_ids)
     tests = pd.read_sql_query(q + " ORDER BY start_time", live, params=args)
     known = set(fr.teams)
-    tests = tests[tests.radiant_team_id.isin(known) & tests.dire_team_id.isin(known)].head(max_matches)
+    if fixed_ids is None:
+        tests = tests[tests.radiant_team_id.isin(known) & tests.dire_team_id.isin(known)].head(max_matches or DEFAULT_MAX_MATCHES)
+    else:
+        found = set(int(mid) for mid in tests.match_id)
+        missing = [mid for mid in fixed_ids if mid not in found]
+        if missing:
+            raise ValueError(f"fixed test matches unavailable or outside filters: {missing}")
+        tests = tests.set_index("match_id").loc[fixed_ids].reset_index()
+        unknown = tests[~tests.radiant_team_id.isin(known) | ~tests.dire_team_id.isin(known)]
+        if len(unknown):
+            raise ValueError(f"fixed test matches contain teams absent from snapshot: {unknown.match_id.tolist()}")
     log.info("blind test: %d matches after %s", len(tests), as_of)
 
     profiles: dict = {}
@@ -79,7 +117,7 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
                 break
             key = (int(r.phase), int(r.is_pick))
             actual = int(r.hero_id)
-            cands = candidates(fr, st, P1, P2, k=kmax, context=context)
+            cands = candidates(fr, st, P1, P2, k=kmax, context=context, context_actions=mode["actions"])
             ranked = [c.hero_id for c in cands]
             legal = st.legal()
             base = [h for h, _ in baseline[key].most_common() if h in legal][:kmax]
@@ -98,7 +136,11 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
         return {f"top{k}": (sum(hits[which][kk][k] for kk in keys) / n if n else None) for k in ks} | {"n": n}
 
     all_keys = list(steps)
-    res = {"as_of": as_of, "patch": fmt_patch, "context": context, "test_matches": int(len(tests)), "steps": sum(steps.values()),
+    selected_ids = [int(mid) for mid in tests.match_id]
+    test_set_hash = hashlib.sha256(json.dumps(selected_ids, separators=(",", ":")).encode()).hexdigest()[:16]
+    res = {"as_of": as_of, "patch": fmt_patch, "context": bool(mode["actions"]), "context_mode": mode,
+           "test_matches": int(len(tests)),
+           "test_match_ids": selected_ids, "test_set_hash": test_set_hash, "steps": sum(steps.values()),
            "overall": {w: agg(w, all_keys) for w in ("model", "baseline")},
            "bans": {w: agg(w, [k for k in all_keys if k[1] == 0]) for w in ("model", "baseline")},
            "picks": {w: agg(w, [k for k in all_keys if k[1] == 1]) for w in ("model", "baseline")},
@@ -114,7 +156,9 @@ def to_markdown(res: dict, snapshot_version: str | None) -> str:
                                                     for k in (1, 3, 5) if m.get(f'top{k}') is not None) + " |")
     L = [f"# Blind-test baseline", "",
          f"snapshot as_of {res['as_of']} (data_version {snapshot_version or '?'}), patch {res['patch']}, "
-         f"{res['test_matches']} later real matches, {res['steps']} draft steps, context terms {'ON' if res.get('context', True) else 'OFF'}.", "",
+         f"{res['test_matches']} later real matches (test set {res['test_set_hash']}), {res['steps']} draft steps, "
+         f"context terms {res.get('context_mode', {}).get('label', 'ALL' if res.get('context', True) else 'OFF')}.", "",
+         f"Machine context_mode: `{res.get('context_mode', {}).get('key', 'all' if res.get('context', True) else 'none')}`.", "",
          "Model = linear evidence score (config/scoring.yaml); baseline = global meta frequency among legal heroes. "
          "Numbers are hit rates of the actual pro action within the model's Top-k (model / baseline).", "",
          "| slice | steps | top1 | top3 | top5 |", "|---|---|---|---|---|",

@@ -103,7 +103,7 @@ def _team_payload(fr: Frames, P: TeamProfile, top_n: int = 8) -> dict:
     # hero -> best signature across the roster (what the lite board scores with)
     sig = P.stats.groupby("hero_id").signature.max() if len(P.stats) else pd.Series(dtype=float)
     hs = P.hero_stats.head(20)
-    return {"name": P.name, "games": int(P.games), "roster": roster,
+    return {"id": int(P.team_id), "name": P.name, "games": int(P.games), "roster": roster,
             "sig": {int(k): round(float(v), 3) for k, v in sig.items() if v > 0},
             "bans": [{"id": int(x.hero_id), "rate": round(float(x.phase0_rate), 3), "meta": round(float(x.global_phase0_rate), 3),
                       "lift": round(float(x.targeted_lift), 3)} for x in P.ban_pressure.head(10).itertuples()],
@@ -166,9 +166,15 @@ def md_to_html(md: str) -> str:
 
 
 # ---------------------------------------------------------------- render
-def render(ladder: dict, matchups: list[dict], meta: dict) -> str:
+def render(ladder: dict, matchups: list[dict], meta: dict, teams: list[dict] | None = None) -> str:
     tpl = TEMPLATE.read_text(encoding="utf-8")
-    data = json.dumps({"ladder": ladder, "matchups": matchups, "meta": meta}, ensure_ascii=False, separators=(",", ":"))
+    by_id = {int(t["id"]): t for t in (teams or [])}
+    for matchup in matchups:
+        for side in ("us", "them"):
+            team = matchup[side]
+            by_id[int(team["id"])] = team
+    data = json.dumps({"ladder": ladder, "matchups": matchups, "teams": list(by_id.values()), "meta": meta},
+                      ensure_ascii=False, separators=(",", ":"))
     # keep the JSON safe inside <script>
     data = data.replace("</", "<\\/")
     return tpl.replace("__DATA__", data)

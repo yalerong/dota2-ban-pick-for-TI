@@ -23,6 +23,18 @@ class Candidate:
     insufficient: bool = False
 
 
+def normalize_context_actions(context: bool = True, context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> frozenset[str]:
+    if not context:
+        return frozenset()
+    if context_actions is None:
+        return frozenset({"ban", "pick"})
+    actions = frozenset(str(a).lower() for a in context_actions)
+    unknown = actions - {"ban", "pick"}
+    if unknown:
+        raise ValueError(f"unknown context action(s): {', '.join(sorted(unknown))}")
+    return actions
+
+
 def _fmt_pct(x: float) -> str:
     return f"{100 * x:.0f}%"
 
@@ -33,7 +45,7 @@ def _player_line(fr: Frames, row: pd.Series) -> str:
 
 
 def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile, k: int | None = None,
-               context: bool = True) -> list[Candidate]:
+               context: bool = True, context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> list[Candidate]:
     """Score every legal hero for the next action from `us` perspective (state.team 0 must be `us`'s side).
 
     The caller re-bases the state so that team 0 == the team we score for.
@@ -44,6 +56,9 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
         return []
     is_pick = state.next_is_pick
     acting = state.next_team           # 0 = us, 1 = them
+    action = "pick" if is_pick else "ban"
+    active_context_actions = normalize_context_actions(context, context_actions)
+    use_context = action in active_context_actions
     # if it's their turn we still can score (used by blind test): swap roles
     me, opp = (us, them) if acting == 0 else (them, us)
     w = cfg["pick"] if is_pick else cfg["ban"]
@@ -52,8 +67,8 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
     my_hs = me.hero_stats.set_index("hero_id") if len(me.hero_stats) else None
     opp_hs = opp.hero_stats.set_index("hero_id") if len(opp.hero_stats) else None
     my_bans = me.own_bans.set_index("hero_id") if len(me.own_bans) else None
-    cw = cfg.get("context", {}) if context else {}
-    ctx = fr.context() if context else None
+    cw = cfg.get("context", {}) if use_context else {}
+    ctx = fr.context() if use_context else None
     my_picks, their_picks = state.picks(acting), state.picks(1 - acting)
     weights = {**w, "counter": cw.get("counter", 0), "synergy": cw.get("synergy", 0), "gap": cw.get("gap", 0)}
     out: list[Candidate] = []
@@ -119,7 +134,7 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
                 ev.append(f"fills {who_with} missing role(s): {', '.join(fills)}")
         score = sum(weights.get(c, 0) * v for c, v in comps.items())
         conf = n / (n + cfg["evidence"]["confidence_k"])
-        out.append(Candidate(h, fr.hero(h), "pick" if is_pick else "ban", score, conf, n, ev,
+        out.append(Candidate(h, fr.hero(h), action, score, conf, n, ev,
                              sorted(set(int(m) for m in mids), reverse=True)[:6], comps,
                              insufficient=n < cfg["evidence"]["min_samples"]))
     out.sort(key=lambda c: (-c.score, c.hero_id))
