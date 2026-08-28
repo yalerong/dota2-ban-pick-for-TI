@@ -38,3 +38,9 @@ evidence:
   min_samples: 3            # below this a candidate is labelled "insufficient evidence"
   confidence_k: 5           # confidence = n / (n + k)
   top_k: 5
+
+lineup:                     # bp lineup: P(radiant | ten heroes). Tables are shrunk residual log-odds; a logistic stacker calibrates.
+  single_prior_strength: 20 # Beta shrink of a hero's own win rate toward 50%
+  k_grid: [10, 30, 50, 100] # pair prior strength candidates; picked on out-of-fold log-loss (bigger = pairs trusted less)
+  folds: 5                  # out-of-fold aggregates for fitting the stacker
+  l2: 0.001                 # ridge on the stacker (intercept unpenalised)

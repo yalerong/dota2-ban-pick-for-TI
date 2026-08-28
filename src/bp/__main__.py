@@ -267,6 +267,104 @@ def cmd_blindtest(a):
     print(md)
 
 
+# ---------------------------------------------------------------- lineup win probability
+def _parse_heroes(fr, spec: str, what: str) -> list[int]:
+    ids = []
+    for name in spec.split(","):
+        hid = fr.hero_id(name.strip())
+        if hid is None:
+            sys.exit(f"{what}: unknown/ambiguous hero {name.strip()!r}")
+        ids.append(hid)
+    if len(ids) != 5 or len(set(ids)) != 5:
+        sys.exit(f"{what}: need exactly five distinct heroes, got {len(ids)}")
+    return ids
+
+
+def cmd_lineup(a):
+    """P(radiant wins | ten heroes) from the calibrated lineup model; --match loads a real draft, --swap edits it."""
+    from .profiles import load_frames
+    from . import lineup as L
+    con = _con(a)
+    as_of = _ts(a.as_of)
+    radiant = dire = None
+    if a.match:
+        row = con.execute("SELECT start_time, patch FROM matches WHERE match_id=?", (a.match,)).fetchone()
+        if not row:
+            sys.exit(f"match {a.match} not in DB")
+        as_of = as_of or int(row[0])           # never train on the match itself or anything after it
+        rows = con.execute("SELECT side, hero_id FROM roster_snapshots WHERE match_id=?", (a.match,)).fetchall()
+        radiant = [h for sd, h in rows if sd == 0]; dire = [h for sd, h in rows if sd == 1]
+        if len(radiant) != 5 or len(dire) != 5:
+            sys.exit(f"match {a.match}: roster is not 5v5 ({len(radiant)}v{len(dire)})")
+        patch = a.patch or row[1]
+    else:
+        if not (a.radiant and a.dire):
+            sys.exit("give --match ID or both --radiant and --dire (five comma-separated heroes each)")
+        patch = a.patch or _default_patch(con, as_of)
+    fr = load_frames(con, as_of=as_of, patch=patch)
+    if radiant is None:
+        radiant, dire = _parse_heroes(fr, a.radiant, "--radiant"), _parse_heroes(fr, a.dire, "--dire")
+    for spec in a.swap or []:
+        if "=" not in spec:
+            sys.exit(f"--swap expects OLD=NEW, got {spec!r}")
+        old, new = (fr.hero_id(x.strip()) for x in spec.split("=", 1))
+        if old is None or new is None:
+            sys.exit(f"--swap {spec!r}: unknown hero")
+        if old in radiant:
+            radiant[radiant.index(old)] = new
+        elif old in dire:
+            dire[dire.index(old)] = new
+        else:
+            sys.exit(f"--swap {spec!r}: {fr.hero(old)} is not in either lineup")
+    if set(radiant) & set(dire) or len(set(radiant)) != 5 or len(set(dire)) != 5:
+        sys.exit("lineups must be ten distinct heroes")
+    model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}), k=a.k)
+    pred = model.predict(radiant, dire)
+    names = lambda ids: ", ".join(fr.hero(h) for h in ids)
+    print(f"patch {patch}, trained on {model.n_train} pro matches before {datetime.fromtimestamp(fr.as_of, timezone.utc):%Y-%m-%d}, k={model.tables.k}")
+    print(f"Radiant: {names(radiant)}\nDire:    {names(dire)}")
+    print(f"\nP(radiant) = {100 * pred.p_radiant:.1f}%   P(dire) = {100 * (1 - pred.p_radiant):.1f}%")
+    print("logit contributions: " + ", ".join(f"{k} {v:+.3f}" for k, v in pred.contributions.items()))
+    print(f"thin pair cells (n < k, shrunk to ~0): {len(pred.thin_cells)}/{pred.n_cells}")
+    print("\n| side | hero | games | hero | synergy | counter |\n|---|---|---:|---:|---:|---:|")
+    for h, d in sorted(pred.per_hero.items(), key=lambda kv: (kv[1]["side"], -abs(kv[1]["hero"] + kv[1]["synergy"] + kv[1]["counter"]))):
+        print(f"| {'R' if d['side'] == 0 else 'D'} | {fr.hero(h)} | {d['games']} | {d['hero']:+.3f} | {d['synergy']:+.3f} | {d['counter']:+.3f} |")
+    if a.json:
+        _out({"p_radiant": pred.p_radiant, "radiant": radiant, "dire": dire, "features": pred.features,
+              "contributions": pred.contributions, "thin_cells": len(pred.thin_cells), "k": model.tables.k, "n_train": model.n_train})
+
+
+def cmd_lineup_eval(a):
+    """Train the lineup model on a snapshot, test on real matches after its as_of; write the calibration report."""
+    import sqlite3
+    from .profiles import load_frames
+    from . import lineup as L
+    snap = sqlite3.connect(a.snapshot); snap.row_factory = sqlite3.Row
+    as_of = int(snap.execute("SELECT value FROM meta WHERE key='as_of_ts'").fetchone()[0])
+    live = _con(a)
+    patch = a.patch or _default_patch(snap, as_of)
+    fr = load_frames(snap, as_of=as_of, patch=patch)
+    model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}), k=a.k)
+    fr_live = load_frames(live, as_of=_ts(a.until), patch=patch)
+    tests = [m for m in L.lineup_matches(fr_live) if m.start_time >= as_of]
+    label = f"all clean {patch} matches after as_of"
+    if a.test_matches:
+        raw = json.loads(Path(a.test_matches).read_text(encoding="utf-8"))
+        ids = set(int(x) for x in (raw["match_ids"] if isinstance(raw, dict) else raw))
+        tests = [m for m in tests if m.match_id in ids]
+        missing = ids - {m.match_id for m in tests}
+        if missing:
+            sys.exit(f"fixed test matches unavailable as clean 5v5 after as_of: {sorted(missing)[:10]}")
+        label = f"fixed set {Path(a.test_matches).name}, {len(tests)} matches"
+    if not tests:
+        sys.exit("no test matches after the snapshot as_of")
+    md = L.to_markdown(L.evaluate(model, tests), _data_version(snap), patch, label)
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(a.out).write_text(md, encoding="utf-8")
+    print(md)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="bp", description="Dota 2 BP scouting")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -300,6 +398,17 @@ def main(argv=None):
     s.add_argument("--team", action="append", help="repeatable team to include in the offline professional-training selector")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
+    s = sp.add_parser("lineup", help="P(radiant wins | ten heroes): calibrated lineup win probability")
+    s.add_argument("--radiant", help="five comma-separated heroes"); s.add_argument("--dire", help="five comma-separated heroes")
+    s.add_argument("--match", type=int, help="load both lineups from a real match (trains only on matches before it)")
+    s.add_argument("--swap", action="append", metavar="OLD=NEW", help="repeatable: replace a hero in either lineup")
+    s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD; only train on matches before this")
+    s.add_argument("--k", type=float, help="pair prior strength (default: chosen on out-of-fold log-loss)")
+    s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_lineup)
+    s = sp.add_parser("lineup-eval", help="train lineup model on a snapshot, test on later real matches; calibration report")
+    s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--k", type=float)
+    s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) restricting the test set"); s.add_argument("--out")
+    s.set_defaults(f=cmd_lineup_eval)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
     s.add_argument("--max", type=int, help="cap for auto-selected matches (default 150); with --test-matches it must cover the whole list")
