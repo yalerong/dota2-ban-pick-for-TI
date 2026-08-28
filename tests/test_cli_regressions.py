@@ -162,6 +162,9 @@ def test_blindtest_preserves_a_fixed_test_match_order(tmp_path, monkeypatch):
     assert res["test_match_ids"] == [22, 11]
     assert res["test_set_hash"]
 
+    with pytest.raises(ValueError, match="evaluated in full"):   # --max must never silently shrink a fixed set
+        blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22, 11], max_matches=1)
+    assert blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22, 11], max_matches=2)["test_match_ids"] == [22, 11]
     with pytest.raises(ValueError, match="duplicates"):
         blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[11, 11])
     with pytest.raises(ValueError, match="unavailable or outside filters"):

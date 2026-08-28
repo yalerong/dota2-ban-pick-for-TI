@@ -1,0 +1,4 @@
+# normalise line endings: the repo is LF; core.autocrlf=true machines and external tools must not flip files to CRLF
+* text=auto eol=lf
+*.png binary
+*.sqlite binary

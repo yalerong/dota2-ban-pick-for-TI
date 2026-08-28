@@ -15,6 +15,8 @@ from .recommend import candidates, normalize_context_actions
 
 log = logging.getLogger(__name__)
 
+DEFAULT_MAX_MATCHES = 150   # cap for auto-selected test matches; a fixed --test-matches list is never truncated
+
 
 def context_mode(context: bool = True, context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> dict:
     actions = normalize_context_actions(context, context_actions)
@@ -36,7 +38,7 @@ def _global_baseline(fr: Frames) -> dict:
 
 
 def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, until: int | None = None,
-               patch: str | None = None, league: int | None = None, max_matches: int = 150, ks=(1, 3, 5),
+               patch: str | None = None, league: int | None = None, max_matches: int | None = None, ks=(1, 3, 5),
                context: bool = True, test_match_ids: list[int] | None = None,
                context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> dict:
     if patch is None:
@@ -70,13 +72,15 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
             raise ValueError("fixed test match ids are empty")
         if len(set(fixed_ids)) != len(fixed_ids):
             raise ValueError("fixed test match ids contain duplicates")
-        fixed_ids = fixed_ids[:max_matches]
+        if max_matches is not None and len(fixed_ids) > max_matches:
+            raise ValueError(f"fixed test set has {len(fixed_ids)} matches but max_matches={max_matches}; "
+                             "a fixed set is evaluated in full - raise the limit or omit it")
         q += f" AND match_id IN ({','.join('?' * len(fixed_ids))})"
         args.extend(fixed_ids)
     tests = pd.read_sql_query(q + " ORDER BY start_time", live, params=args)
     known = set(fr.teams)
     if fixed_ids is None:
-        tests = tests[tests.radiant_team_id.isin(known) & tests.dire_team_id.isin(known)].head(max_matches)
+        tests = tests[tests.radiant_team_id.isin(known) & tests.dire_team_id.isin(known)].head(max_matches or DEFAULT_MAX_MATCHES)
     else:
         found = set(int(mid) for mid in tests.match_id)
         missing = [mid for mid in fixed_ids if mid not in found]

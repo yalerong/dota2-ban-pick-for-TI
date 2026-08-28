@@ -302,11 +302,12 @@ def main(argv=None):
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
-    s.add_argument("--max", type=int, default=150); s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms")
+    s.add_argument("--max", type=int, help="cap for auto-selected matches (default 150); with --test-matches it must cover the whole list")
+    s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms")
     s.add_argument("--context-actions", choices=["all", "ban", "pick", "none"], default="all",
                    help="where to apply counter/synergy/gap terms; --no-context still forces none")
-    s.set_defaults(f=cmd_blindtest)
     s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) fixing the evaluation match order")
+    s.set_defaults(f=cmd_blindtest)
 
     a = p.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):   # player names contain non-GBK glyphs; never crash on a Windows console
