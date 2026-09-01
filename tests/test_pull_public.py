@@ -1,7 +1,6 @@
 """scripts/pull_public.py: row parsing, patch tagging, cursor/resume, and stop conditions - with a fake OpenDota."""
 from __future__ import annotations
 import importlib.util
-import sys
 from pathlib import Path
 
 import pytest

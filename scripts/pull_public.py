@@ -1,6 +1,6 @@
 """Pull high-rank public (ladder) matches from OpenDota /publicMatches into data/db/public.sqlite.
 
-Why: the pro dataset (~7k matches per patch) cannot support hero-pair counter/synergy tables (docs/lineup-baseline.md);
+Why: the pro dataset (~7k matches per patch) cannot support hero-pair counter/synergy tables;
 ladder games at Divine+ are the same heroes played hundreds of thousands of times. This is the dense prior for `bp lineup`.
 
 What it does
@@ -204,7 +204,10 @@ def main() -> int:
                 log.info("daily budget exhausted (%s); --once -> exiting. Rerun tomorrow, it resumes from the cursor.", e); return 0
             nxt = next_utc_day()
             log.info("daily budget exhausted (%s); sleeping until %s UTC", e, nxt.isoformat())
-            sleep_until(nxt)
+            try:  # an interrupt raised inside this except block is not seen by the sibling handler below
+                sleep_until(nxt)
+            except KeyboardInterrupt:
+                con.commit(); log.info("interrupted; cursor saved: %s", json.dumps(status(con), ensure_ascii=False)); return 130
         except KeyboardInterrupt:
             con.commit(); log.info("interrupted; cursor saved: %s", json.dumps(status(con), ensure_ascii=False)); return 130
 
