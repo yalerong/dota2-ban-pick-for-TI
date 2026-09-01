@@ -296,7 +296,8 @@ def test_context_actions_can_apply_only_to_bans(league):
 
 
 def test_h5_page_builds(league, tmp_path):
-    import json, re
+    import json
+    import re
     from bp.h5 import ladder_payload, matchup_payload, render, md_to_html
     fr = load_frames(league, patch="7.41")
     stats = player_hero_stats(fr)
@@ -325,3 +326,17 @@ def test_h5_md_inline_rules():
     h = md_to_html("- **not_me** (pos 4) and **some_name** here")
     assert "<i>" not in h and "<b>not_me</b>" in h
     assert "<i>no roster found</i>" in md_to_html("_no roster found_")
+    # only ids in the report's "— id, id" list format become match links; bare numbers (account ids) do not
+    assert "opendota.com" not in md_to_html("- player 123456789 played 30 games")
+    h = md_to_html("- x — 8960762254, 8960762255")
+    assert h.count("opendota.com/matches/") == 2
+
+
+def test_blindtest_fixed_set_errors_on_event_count_mismatch(league):
+    from bp.blindtest import blind_test
+    as_of = 1_710_000_000 + 10 * 86400
+    mid = league.execute("SELECT match_id FROM matches WHERE excluded=0 AND start_time >= ? LIMIT 1", (as_of,)).fetchone()[0]
+    league.execute("INSERT INTO draft_events (match_id, order_no, team_side, is_pick, hero_id, phase) VALUES (?,99,0,1,1,9)", (mid,))
+    league.commit()
+    with pytest.raises(ValueError, match="draft events"):
+        blind_test(league, league, as_of=as_of, patch="7.41", test_match_ids=[mid])

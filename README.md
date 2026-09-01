@@ -8,7 +8,7 @@ Current state: **Phase 1 (data foundation) + Phase 2 (scouting MVP)** — OpenDo
 
 ```bash
 pip install -e .[dev]      # or: pip install requests pandas pyyaml pytest
-cp .env.example .env       # OPENDOTA_API_KEY optional (free tier: 60/min, 2000/day)
+cp .env.example .env       # OPENDOTA_API_KEY optional (free tier: 60/min, 3000/day)
 pytest -q
 ```
 
@@ -49,7 +49,7 @@ and role-gap fill from dotaconstants tags. `bp blindtest --no-context` runs the 
 no players or teams. Hero / synergy / counter tables are Beta-shrunk residual log-odds (an unseen pair is exactly 0), summed per
 match and calibrated by a logistic stacker fitted on out-of-fold aggregates. `docs/lineup-baseline.md` records log-loss / Brier
 against a constant and a hero-only baseline plus a reliability table; on pro data alone the pair terms add nothing yet
-(see the doc), which is the case for adding high-MMR public matches before trusting counters.
+(see the doc) - which is the reason for adding high-MMR public matches before trusting counters.
 Every number in a report carries up to 5 match ids so it can be verified on OpenDota.
 
 ## Layout

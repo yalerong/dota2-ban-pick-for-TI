@@ -106,6 +106,8 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
         ev = pd.read_sql_query("SELECT order_no, team_side, is_pick, hero_id, phase FROM draft_events WHERE match_id=? ORDER BY order_no",
                                live, params=(int(t.match_id),))
         if len(ev) != len(fmt):
+            if fixed_ids is not None:
+                raise ValueError(f"fixed test match {t.match_id}: {len(ev)} draft events, format has {len(fmt)}")
             continue
         first_side = int(ev.team_side.iloc[0])
         first_team = t.radiant_team_id if first_side == 0 else t.dire_team_id
@@ -154,7 +156,7 @@ def to_markdown(res: dict, snapshot_version: str | None) -> str:
         m, b = d["model"], d["baseline"]
         return (f"| {name} | {m['n']} | " + " | ".join(f"{100*m[f'top{k}']:.1f}% / {100*b[f'top{k}']:.1f}%"
                                                     for k in (1, 3, 5) if m.get(f'top{k}') is not None) + " |")
-    L = [f"# Blind-test baseline", "",
+    L = ["# Blind-test baseline", "",
          f"snapshot as_of {res['as_of']} (data_version {snapshot_version or '?'}), patch {res['patch']}, "
          f"{res['test_matches']} later real matches (test set {res['test_set_hash']}), {res['steps']} draft steps, "
          f"context terms {res.get('context_mode', {}).get('label', 'ALL' if res.get('context', True) else 'OFF')}.", "",

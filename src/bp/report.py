@@ -149,5 +149,6 @@ def build_report(fr: Frames, us: TeamProfile, them: TeamProfile, fmt, patch: str
         L += _opening_section(fr, us, them, fmt)
     L += ["---", "Smoothed WR = Beta-smoothed with the hero's pro win rate as prior; lift = vs the player's/team's own baseline; "
           "all counts are time-decayed (half-life "
-          f"{fr.cfg['decay']['half_life_days']}d). Every line lists up to 5 match ids for verification on OpenDota."]
+          f"{fr.cfg['decay']['half_life_days']}d). Every line lists up to 5 match ids for verification on OpenDota. "
+          "Phase labels are 1-based: phase-1 is the first ban/pick run of the draft."]
     return "\n".join(L)
