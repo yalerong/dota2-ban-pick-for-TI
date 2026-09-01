@@ -2,12 +2,12 @@
 
 Train: 6585 matches before snapshot as_of (data_version 58e7a04b5d620dcd), patch 7.41. Test: 364 later real matches (all clean 7.41 matches after as_of). Prior strength k=100 chosen on out-of-fold log-loss.
 
-Model = shrunk residual tables (hero / synergy / counter / role gap) + calibrated logistic stacker. Lower log-loss / Brier is better; constant = training radiant win rate; hero_only = same tables, stacker refitted on hero strength alone.
+Model = shrunk residual tables (hero / synergy / counter / role gap) + calibrated logistic stacker. Lower log-loss / Brier is better; constant = training radiant win rate; hero_only = same tables, its stacker fitted on out-of-fold training aggregates (never on the test set).
 
 | model | log-loss | Brier | accuracy |
 |---|---:|---:|---:|
 | model | 0.6903 | 0.2485 | 54.7% |
-| hero_only | 0.6903 | 0.2486 | 51.6% |
+| hero_only | 0.6919 | 0.2494 | 52.7% |
 | constant | 0.6928 | 0.2498 | 51.6% |
 
 Stacker coefficients (logit units): side +0.112, hero +0.494, synergy +0.196, counter +0.219, gap +0.027.

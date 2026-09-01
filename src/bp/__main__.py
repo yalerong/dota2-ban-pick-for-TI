@@ -291,7 +291,7 @@ def cmd_lineup(a):
         row = con.execute("SELECT start_time, patch FROM matches WHERE match_id=?", (a.match,)).fetchone()
         if not row:
             sys.exit(f"match {a.match} not in DB")
-        as_of = as_of or int(row[0])           # never train on the match itself or anything after it
+        as_of = min(as_of, int(row[0])) if as_of else int(row[0])   # never train on the match itself or anything after it
         rows = con.execute("SELECT side, hero_id FROM roster_snapshots WHERE match_id=?", (a.match,)).fetchall()
         radiant = [h for sd, h in rows if sd == 0]; dire = [h for sd, h in rows if sd == 1]
         if len(radiant) != 5 or len(dire) != 5:
@@ -320,6 +320,10 @@ def cmd_lineup(a):
         sys.exit("lineups must be ten distinct heroes")
     model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}), k=a.k)
     pred = model.predict(radiant, dire)
+    if a.json:                             # --json mode: exactly one JSON document on stdout, no human output around it
+        _out({"p_radiant": pred.p_radiant, "radiant": radiant, "dire": dire, "features": pred.features,
+              "contributions": pred.contributions, "thin_cells": len(pred.thin_cells), "k": model.tables.k, "n_train": model.n_train})
+        return
     names = lambda ids: ", ".join(fr.hero(h) for h in ids)
     print(f"patch {patch}, trained on {model.n_train} pro matches before {datetime.fromtimestamp(fr.as_of, timezone.utc):%Y-%m-%d}, k={model.tables.k}")
     print(f"Radiant: {names(radiant)}\nDire:    {names(dire)}")
@@ -329,9 +333,6 @@ def cmd_lineup(a):
     print("\n| side | hero | games | hero | synergy | counter |\n|---|---|---:|---:|---:|---:|")
     for h, d in sorted(pred.per_hero.items(), key=lambda kv: (kv[1]["side"], -abs(kv[1]["hero"] + kv[1]["synergy"] + kv[1]["counter"]))):
         print(f"| {'R' if d['side'] == 0 else 'D'} | {fr.hero(h)} | {d['games']} | {d['hero']:+.3f} | {d['synergy']:+.3f} | {d['counter']:+.3f} |")
-    if a.json:
-        _out({"p_radiant": pred.p_radiant, "radiant": radiant, "dire": dire, "features": pred.features,
-              "contributions": pred.contributions, "thin_cells": len(pred.thin_cells), "k": model.tables.k, "n_train": model.n_train})
 
 
 def cmd_lineup_eval(a):
@@ -350,7 +351,11 @@ def cmd_lineup_eval(a):
     label = f"all clean {patch} matches after as_of"
     if a.test_matches:
         raw = json.loads(Path(a.test_matches).read_text(encoding="utf-8"))
-        ids = set(int(x) for x in (raw["match_ids"] if isinstance(raw, dict) else raw))
+        id_list = [int(x) for x in (raw["match_ids"] if isinstance(raw, dict) else raw)]
+        dups = sorted({x for x in id_list if id_list.count(x) > 1})
+        if dups:
+            sys.exit(f"fixed test set has duplicate match ids: {dups[:10]}")
+        ids = set(id_list)
         tests = [m for m in tests if m.match_id in ids]
         missing = ids - {m.match_id for m in tests}
         if missing:

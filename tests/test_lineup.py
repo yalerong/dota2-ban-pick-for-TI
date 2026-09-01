@@ -74,3 +74,26 @@ def test_markdown_report_lists_all_baselines():
     model = L.fit(_synth(600, 7), k=30)
     md = L.to_markdown(L.evaluate(model, _synth(300, 8)), "ver", "7.41", "unit")
     assert "| model |" in md and "| hero_only |" in md and "| constant |" in md and "## Reliability" in md
+
+
+@pytest.fixture(scope="module")
+def fitted():
+    return L.fit(_synth(1500, 2), k=30)
+
+
+def test_hero_only_ablation_is_scored_with_the_training_fit(fitted):
+    tests = _synth(400, 9)
+    res = L.evaluate(fitted, tests)
+    F = [L.features(fitted.tables, m.radiant, m.dire) for m in tests]
+    p = L._sigmoid(np.array([[1.0, f["hero"]] for f in F]) @ fitted.beta_hero)
+    assert abs(res["hero_only"]["logloss"] - L.log_loss(p, np.array([m.radiant_win for m in tests], dtype=float))) < 1e-9
+    # relabelling the test set must not move a single hero-only prediction: its coefficients come from training only
+    flipped = [L.LineupMatch(m.match_id, m.radiant, m.dire, 1 - m.radiant_win, m.start_time) for m in tests]
+    res2 = L.evaluate(fitted, flipped)
+    assert abs(res2["hero_only"]["accuracy"] - (1 - res["hero_only"]["accuracy"])) < 1e-9
+
+
+def test_per_hero_pair_columns_sum_to_their_logit_contribution(fitted):
+    pred = fitted.predict((1, 3, 5, 7, 9), (2, 4, 6, 8, 10))
+    for key in ("hero", "synergy", "counter"):
+        assert abs(sum(d[key] for d in pred.per_hero.values()) - pred.contributions[key]) < 1e-9

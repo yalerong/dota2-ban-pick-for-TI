@@ -175,6 +175,7 @@ class LineupPrediction:
 class LineupModel:
     tables: Tables
     beta: np.ndarray                  # [intercept] + FEATURES
+    beta_hero: np.ndarray             # [intercept, hero]: the hero-only ablation, fitted on the training OOF rows
     roles: dict
     targets: dict
     n_train: int
@@ -194,8 +195,10 @@ class LineupModel:
             for h in team:
                 per_hero[h] = {"side": side,
                                "hero": sign * self.beta[1] * t.s(h),
-                               "synergy": sign * self.beta[2] * sum(t.syn(h, c)[0] for c in team if c != h),
-                               "counter": sign * self.beta[3] * sum(t.ctr(h, b)[0] for b in opp),
+                               # half of each pair effect books to each participant, so a column sums to its
+                               # contribution above instead of twice it
+                               "synergy": 0.5 * sign * self.beta[2] * sum(t.syn(h, c)[0] for c in team if c != h),
+                               "counter": 0.5 * sign * self.beta[3] * sum(t.ctr(h, b)[0] for b in opp),
                                "games": t.single.get(h, (0.0, 0))[1]}
         return LineupPrediction(float(_sigmoid(z)), z, f, contrib, per_hero, thin, 25 + 20)
 
@@ -236,29 +239,31 @@ def fit(matches: list[LineupMatch], roles: dict | None = None, targets: dict | N
     for kk in grid:
         F = oof_features(matches, kk, c["folds"], roles, targets, c["single_prior_strength"])
         X = _design(F)
-        # the stacker itself is fitted in-sample on OOF aggregates (5 coefficients cannot overfit thousands of rows)
+        # the stackers themselves are fitted in-sample on OOF aggregates (a handful of coefficients cannot overfit
+        # thousands of rows); the hero-only ablation shares these rows so it never sees any test label either
         b = fit_logistic(X, y, c["l2"])
+        b_hero = fit_logistic(X[:, :2], y, c["l2"])
         ll = log_loss(_sigmoid(X @ b), y)
         search.append({"k": kk, "logloss": ll})
         if best is None or ll < best[0]:
-            best = (ll, kk, b)
-    _, k_best, beta = best
+            best = (ll, kk, b, b_hero)
+    _, k_best, beta, beta_hero = best
     tables = build_tables(matches, k_best, c["single_prior_strength"])
     log.info("lineup: fitted on %d matches, k=%s, beta=%s", len(matches), k_best, np.round(beta, 3).tolist())
-    return LineupModel(tables, beta, roles, targets, len(matches), search)
+    return LineupModel(tables, beta, beta_hero, roles, targets, len(matches), search)
 
 
 # ---------------------------------------------------------------- evaluation
 def evaluate(model: LineupModel, tests: list[LineupMatch], bins: int = 8) -> dict:
-    """Log-loss / Brier / accuracy vs a constant baseline and a hero-only refit, plus a reliability table."""
+    """Log-loss / Brier / accuracy vs a constant baseline and a hero-only ablation, plus a reliability table."""
     y = np.array([m.radiant_win for m in tests], dtype=float)
     p = np.array([model.predict(m.radiant, m.dire).p_radiant for m in tests])
     base = model.tables.base_rate
     p_const = np.full_like(y, base)
-    # hero-only ablation: same tables, stacker refitted on the hero aggregate alone (fitted on the test rows -> optimistic for it)
+    # hero-only ablation: same tables, its stacker was fitted on the training OOF rows (fit), never on these labels
     F = [features(model.tables, m.radiant, m.dire, model.roles, model.targets) for m in tests]
     X_hero = np.array([[1.0, f["hero"]] for f in F])
-    p_hero = _sigmoid(X_hero @ fit_logistic(X_hero, y))
+    p_hero = _sigmoid(X_hero @ model.beta_hero)
 
     def summary(pp):
         return {"logloss": log_loss(pp, y), "brier": float(np.mean((pp - y) ** 2)), "accuracy": float(np.mean((pp >= 0.5) == (y == 1)))}
@@ -280,8 +285,8 @@ def to_markdown(res: dict, snapshot_version: str | None, patch: str | None, labe
          f"Train: {res['n_train']} matches before snapshot as_of (data_version {snapshot_version or '?'}), patch {patch}. "
          f"Test: {res['n']} later real matches ({label}). Prior strength k={res['k']} chosen on out-of-fold log-loss.", "",
          "Model = shrunk residual tables (hero / synergy / counter / role gap) + calibrated logistic stacker. "
-         "Lower log-loss / Brier is better; constant = training radiant win rate; hero_only = same tables, stacker refitted "
-         "on hero strength alone.", "",
+         "Lower log-loss / Brier is better; constant = training radiant win rate; hero_only = same tables, its stacker "
+         "fitted on out-of-fold training aggregates (never on the test set).", "",
          "| model | log-loss | Brier | accuracy |", "|---|---:|---:|---:|"]
     for name in ("model", "hero_only", "constant"):
         m = res[name]
