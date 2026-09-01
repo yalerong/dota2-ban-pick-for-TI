@@ -36,11 +36,20 @@ bp report --us "Team Spirit" --them "Team Liquid"     # -> reports/<us>-vs-<them
 bp draft  --us "Team Spirit" --them "Team Liquid" --first them   # interactive board; hero names, undo, state, quit
 bp --db data/snapshots/snapshot_20260801_<hash>.sqlite report --us ... --them ...   # as-of analysis on a frozen snapshot
 bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --test-matches docs/baseline-test-matches.json --out docs/baseline.md
+bp lineup --match 8960991322 --swap "Juggernaut=Kez"           # P(radiant | ten heroes), trained only on matches before that one
+bp lineup --radiant "Axe,Invoker,Rubick,Hoodwink,Kez" --dire "Bane,Lifestealer,Pangolier,Mirana,Dark Seer"
+bp lineup-eval --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --out docs/lineup-baseline.md
 ```
 
 All scores are linear combinations of explainable statistics; weights live in `config/scoring.yaml`.
 Draft-context terms (`context.py`): Beta-smoothed counter matrix (hero vs enemy picks so far), synergy matrix (with own picks),
 and role-gap fill from dotaconstants tags. `bp blindtest --no-context` runs the ablation.
+
+`bp lineup` is the separate "draft is over, who is favoured" number (what the in-game prediction shows at 0:00): ten heroes only,
+no players or teams. Hero / synergy / counter tables are Beta-shrunk residual log-odds (an unseen pair is exactly 0), summed per
+match and calibrated by a logistic stacker fitted on out-of-fold aggregates. `docs/lineup-baseline.md` records log-loss / Brier
+against a constant and a hero-only baseline plus a reliability table; on pro data alone the pair terms add nothing yet
+(see the doc), which is the case for adding high-MMR public matches before trusting counters.
 Every number in a report carries up to 5 match ids so it can be verified on OpenDota.
 
 ## Layout

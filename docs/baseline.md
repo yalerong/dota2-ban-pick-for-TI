@@ -144,3 +144,10 @@ it preserved Top-3 and slightly improved Top-5. On acceptance, all-actions vs ba
 vs 30.4% Top-5; Top-1 moved 9.0% to 8.9%. The new snapshot's all-actions Top-3 (21.5%) also remains just below Run 2
 (21.7%), so neither the checkpoint nor bans-only mode is promoted. The code retains the action-specific switch for future
 experiments; production behavior remains context on all actions.
+
+## Lineup win probability (separate metric)
+
+`bp lineup-eval` trains the ten-hero win-probability model on the same 2026-08-01 snapshot and scores every clean 7.41 match
+after the cutoff (and the frozen 120 as a second file). Results and the calibration table live in `docs/lineup-baseline.md` /
+`docs/lineup-baseline-frozen.md`. Promotion rule for that model: lower log-loss than the committed report on the same test
+set, and reliability rows with n >= 30 within 5pt of the diagonal.
