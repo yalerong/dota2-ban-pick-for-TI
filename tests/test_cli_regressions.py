@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -224,3 +224,82 @@ def test_blindtest_cli_context_actions_and_markdown_labels(tmp_path, monkeypatch
     assert seen == {"context": False, "context_actions": ("pick",)}
     assert "context terms OFF" in out
     assert "Machine context_mode: `none`" in out
+
+
+class FakeLineupFrames:
+    """Minimal Frames stand-in: 60 clean 5v5 matches on ten heroes, enough to fit the lineup stacker."""
+    roles: dict = {}
+    cfg: dict = {}
+
+    def __init__(self, as_of=None):
+        self.as_of = as_of
+        ms, ro = [], []
+        for i in range(60):
+            ms.append({"match_id": i, "radiant_win": i % 2, "start_time": 2_000_000_000 + i})
+            for sd, hs in ((0, (1, 3, 5, 7, 9)), (1, (2, 4, 6, 8, 10))):
+                ro += [{"match_id": i, "side": sd, "hero_id": h} for h in hs]
+        self.matches = pd.DataFrame(ms)
+        self.roster = pd.DataFrame(ro)
+
+    def hero(self, h):
+        return f"H{h}"
+
+    def hero_id(self, x):
+        return int(x)
+
+
+def _lineup_db(tmp_path) -> str:
+    db = tmp_path / "bp.sqlite"
+    con = connect(db)
+    _insert_match(con, 5, "7.41", 2_000_000_000)
+    con.executemany("INSERT INTO roster_snapshots (match_id, team_id, account_id, player_slot, side, hero_id) VALUES (?,?,?,?,?,?)",
+                    [(5, 100 if sd == 0 else 200, -1, sd * 5 + i, sd, h)
+                     for sd, hs in ((0, (1, 3, 5, 7, 9)), (1, (2, 4, 6, 8, 10))) for i, h in enumerate(hs)])
+    con.commit()
+    return str(db)
+
+
+def test_lineup_match_caps_explicit_as_of_at_the_match_start(tmp_path, monkeypatch):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+
+    seen = {}
+
+    def fake_load_frames(con_arg, as_of=None, patch=None):
+        seen["as_of"] = as_of
+        return FakeLineupFrames(as_of)
+
+    monkeypatch.setattr(profiles, "load_frames", fake_load_frames)
+    cli.cmd_lineup(SimpleNamespace(db=_lineup_db(tmp_path), match=5, radiant=None, dire=None, swap=[],
+                                   patch=None, as_of="2035-01-01", k=None, json=False))
+    assert seen["as_of"] == 2_000_000_000      # capped at the match start, not the later explicit --as-of
+
+
+def test_lineup_json_writes_a_single_json_document(tmp_path, monkeypatch, capsys):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+
+    monkeypatch.setattr(profiles, "load_frames", lambda *args, **kw: FakeLineupFrames(2_000_000_000))
+    cli.cmd_lineup(SimpleNamespace(db=_lineup_db(tmp_path), match=5, radiant=None, dire=None, swap=[],
+                                   patch=None, as_of=None, k=None, json=True))
+    doc = json.loads(capsys.readouterr().out)  # the whole stdout must parse as one JSON document
+    assert 0 < doc["p_radiant"] < 1 and doc["n_train"] == 60
+
+
+def test_lineup_eval_rejects_duplicate_fixed_test_ids(tmp_path, monkeypatch):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+    import sqlite3
+
+    snap = tmp_path / "snap.sqlite"
+    s = sqlite3.connect(snap)
+    s.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    s.execute("INSERT INTO meta VALUES ('as_of_ts', '0')")
+    s.commit(); s.close()
+    fixed = tmp_path / "fixed.json"
+    fixed.write_text('{"match_ids": [7, 7, 8]}', encoding="utf-8")
+    monkeypatch.setattr(profiles, "load_frames", lambda *args, **kw: FakeLineupFrames())
+    a = SimpleNamespace(snapshot=str(snap), db=str(tmp_path / "live.sqlite"), patch="7.41", k=None,
+                        test_matches=str(fixed), until=None, out=None)
+    with pytest.raises(SystemExit, match="duplicate"):
+        cli.cmd_lineup_eval(a)
