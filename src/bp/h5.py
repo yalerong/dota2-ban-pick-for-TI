@@ -126,8 +126,9 @@ def _inline(s: str) -> str:
     s = html.escape(s, quote=False)
     for rx, rep in _INLINE:
         s = rx.sub(rep, s)
-    # match ids -> OpenDota links (8-10 digit numbers)
-    return re.sub(r"\b(\d{8,10})\b", r'<a href="https://www.opendota.com/matches/\1" target="_blank">\1</a>', s)
+    # match ids -> OpenDota links (8-10 digit numbers). Only ids in the report's "— id, id" list format are
+    # linked, so account/team ids printed as bare numbers are not mis-linked to a match page.
+    return re.sub(r"(?<=— |, )(\d{8,10})\b", r'<a href="https://www.opendota.com/matches/\1" target="_blank">\1</a>', s)
 
 
 def md_to_html(md: str) -> str:

@@ -11,7 +11,7 @@ from bp.draft_formats import infer_formats, load_format, describe
 from bp.export import export_snapshot
 from bp.normalize import normalize_match, assign_phases, relative_signature, draft_sequence
 from bp.quality import run_checks
-from bp.sync import sync_index
+from bp.sync import sync_index, sync_matches
 
 # a plausible 24-action CM sequence: (is_pick, team) -- content doesn't matter, consistency does
 SEQ = [(0, 0), (0, 1), (0, 0), (0, 1), (0, 0), (0, 1), (0, 0),
@@ -213,3 +213,46 @@ def test_connect_migrates_player_name_observations(tmp_path):
     migrated = connect(path)
     columns = {r[1] for r in migrated.execute("PRAGMA table_info(roster_snapshots)")}
     assert "player_name" in columns
+
+
+def test_packaged_scoring_yaml_matches_the_config_copy():
+    from importlib import resources
+    from bp.config import CONFIG
+    packed = resources.files("bp").joinpath("scoring.yaml").read_bytes()
+    assert (CONFIG.root / "config" / "scoring.yaml").read_bytes() == packed
+
+
+class DetailClient:
+    def __init__(self, results):                     # match_id -> payload | exception
+        self.results = results
+
+    def match(self, mid):
+        r = self.results[mid]
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_sync_matches_marks_statuses_and_stays_resumable(con):
+    for mid in (1, 2, 3, 4):
+        con.execute("INSERT INTO match_index (match_id, start_time) VALUES (?,?)", (mid, 1000))
+    client = DetailClient({1: {"match_id": 1, "picks_bans": [{}]},
+                           2: {"match_id": 2, "picks_bans": []},
+                           3: None,
+                           4: RuntimeError("network down")})
+    st = sync_matches(client, con)
+    assert st["ok"] == 1 and st["missing_picks_bans"] == 1 and st["not_found"] == 1 and st["error"] == 1
+    assert st["remaining"] == 1                      # only the failed match stays pending (retryable)
+    assert con.execute("SELECT detail_status FROM match_index WHERE match_id=4").fetchone()[0] is None
+
+
+def test_sync_matches_stops_at_daily_budget(con):
+    from bp.opendota import DailyBudgetExceeded
+    for mid in (1, 2, 3):
+        con.execute("INSERT INTO match_index (match_id, start_time) VALUES (?,?)", (mid, 1000))
+    client = DetailClient({1: {"match_id": 1, "picks_bans": [{}]},
+                           2: DailyBudgetExceeded("budget"),
+                           3: {"match_id": 3, "picks_bans": [{}]}})
+    st = sync_matches(client, con)
+    assert st["budget_stop"] is True and st["ok"] == 1 and st["remaining"] == 2
+    assert con.execute("SELECT detail_status FROM match_index WHERE match_id=3").fetchone()[0] is None

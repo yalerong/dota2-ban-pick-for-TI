@@ -145,6 +145,8 @@ def test_blindtest_preserves_a_fixed_test_match_order(tmp_path, monkeypatch):
     _insert_match(snap, 1, "7.41", 1000)
     _insert_match(live, 11, "7.41", 2100)
     _insert_match(live, 22, "7.41", 2200)
+    for mid in (11, 22):                     # clean matches always carry exactly len(fmt) draft events
+        live.execute("INSERT INTO draft_events (match_id, order_no, team_side, is_pick, hero_id, phase) VALUES (?,0,0,0,7,0)", (mid,))
     snap.commit()
     live.commit()
 
@@ -152,10 +154,14 @@ def test_blindtest_preserves_a_fixed_test_match_order(tmp_path, monkeypatch):
         matches = pd.DataFrame({"start_time": [1000], "patch": ["7.41"]})
         events = pd.DataFrame(columns=["phase", "is_pick", "hero_id", "w"])
         teams = {100: "Rad", 200: "Dire"}
+        heroes = {7: "H7"}
 
     monkeypatch.setattr(blindtest, "load_frames", lambda *args, **kwargs: FakeFrames())
     monkeypatch.setattr(blindtest, "load_format", lambda *args, **kwargs: ((0, 0),))
     monkeypatch.setattr(blindtest, "player_hero_stats", lambda fr: {})
+    # this test covers order/validation only, not scoring
+    monkeypatch.setattr(blindtest, "build_profile", lambda fr, tid, stats=None: object())
+    monkeypatch.setattr(blindtest, "candidates", lambda *args, **kwargs: [])
 
     res = blindtest.blind_test(snap, live, as_of=2000, patch="7.41", test_match_ids=[22, 11])
 
