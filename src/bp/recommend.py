@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from .draft_state import DraftState
-from .profiles import Frames, TeamProfile, lookup_response
+from .profiles import Frames, TeamProfile, lookup_next_pick, lookup_response
 
 
 @dataclass
@@ -62,15 +62,23 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
     # if it's their turn we still can score (used by blind test): swap roles
     me, opp = (us, them) if acting == 0 else (them, us)
     w = cfg["pick"] if is_pick else cfg["ban"]
-    their_bp = opp.ban_pressure.set_index("hero_id") if len(opp.ban_pressure) else None      # bans opp receives
-    my_bp = me.ban_pressure.set_index("hero_id") if len(me.ban_pressure) else None           # bans I receive
-    my_hs = me.hero_stats.set_index("hero_id") if len(me.hero_stats) else None
-    opp_hs = opp.hero_stats.set_index("hero_id") if len(opp.hero_stats) else None
-    my_bans = me.own_bans.set_index("hero_id") if len(me.own_bans) else None
+    their_bp = opp.by_hero("ban_pressure")      # bans opp receives
+    my_bp = me.by_hero("ban_pressure")          # bans I receive
+    my_hs = me.by_hero("hero_stats")
+    opp_hs = opp.by_hero("hero_stats")
+    my_bans = me.by_hero("own_bans")
     cw = cfg.get("context", {}) if use_context else {}
     ctx = fr.context() if use_context else None
     my_picks, their_picks = state.picks(acting), state.picks(1 - acting)
     weights = {**w, "counter": cw.get("counter", 0), "synergy": cw.get("synergy", 0), "gap": cw.get("gap", 0)}
+    # pick: which roster players still need a hero (weight pick.position_fit; 0 = off)
+    free = me.open_positions(my_picks) if is_pick and w.get("position_fit", 0) else None
+    # ban: what the opponent tends to pick next from this draft position (weight ban.their_next_pick; 0 = off)
+    next_pick = None
+    if not is_pick and w.get("their_next_pick", 0):
+        resp = lookup_next_pick(opp.edges, _rebase_prefix(state.prefix_key(), for_team=1 - acting))
+        tot = sum(wgt for _, wgt, _ in resp) or 1.0
+        next_pick = {hh: (wgt / tot, nn) for hh, wgt, nn in resp}
     out: list[Candidate] = []
     for h in sorted(state.legal()):
         comps: dict[str, float] = {}
@@ -82,39 +90,49 @@ def candidates(fr: Frames, state: DraftState, us: TeamProfile, them: TeamProfile
             comps["our_signature"] = s
             if row is not None:
                 ev.append(_player_line(fr, row)); mids += list(row.match_ids); n = max(n, int(row.games))
-            bp = my_bp.loc[h] if my_bp is not None and h in my_bp.index else None
+            bp = my_bp.get(h)
             comps["their_ban_pressure"] = float(bp.phase0_rate) if bp is not None else 0.0
             if bp is not None and bp.bans:
                 ev.append(f"{fr.hero(h)} banned against us {int(bp.bans)}x in {int(bp.games)} games ({int(bp.phase0)} in phase 1)")
                 mids += list(bp.match_ids)
                 n = max(n, int(bp.bans))
-            hs = my_hs.loc[h] if my_hs is not None and h in my_hs.index else None
+            hs = my_hs.get(h)
             comps["our_pick_rate"] = float(hs.pick_rate) if hs is not None else 0.0
             comps["our_win_lift"] = float(hs.win_lift) if hs is not None else 0.0
             if hs is not None:
                 ev.append(f"we picked {fr.hero(h)} {int(hs.picks)}x, {int(hs.wins)} wins (smoothed {_fmt_pct(hs.wr)})")
                 mids += list(hs.match_ids)
                 n = max(n, int(hs.picks))
+            if free is not None:
+                takers = me.can_take(h, free)
+                comps["position_fit"] = 1.0 if takers else 0.0
+                if takers:
+                    ev.append("in the pool of " + ", ".join(fr.player(a) for a in takers) + " (still without a hero)")
         else:
             s, row = opp.sig(h)
             comps["their_signature"] = s
             if row is not None:
                 ev.append("their " + _player_line(fr, row)); mids += list(row.match_ids); n = max(n, int(row.games))
-            hs = opp_hs.loc[h] if opp_hs is not None and h in opp_hs.index else None
+            hs = opp_hs.get(h)
             comps["their_pick_rate"] = float(hs.pick_rate) if hs is not None else 0.0
             comps["their_win_lift"] = float(hs.win_lift) if hs is not None else 0.0
             if hs is not None:
                 ev.append(f"they picked {fr.hero(h)} {int(hs.picks)}x, {int(hs.wins)} wins (smoothed {_fmt_pct(hs.wr)}, lift {hs.win_lift:+.2f})")
                 mids += list(hs.match_ids); n = max(n, int(hs.picks))
-            bp = their_bp.loc[h] if their_bp is not None and h in their_bp.index else None
+            bp = their_bp.get(h)
             if bp is not None and bp.bans:
                 ev.append(f"{fr.hero(h)} banned against them {int(bp.bans)}x in {int(bp.games)} games")
                 mids += list(bp.match_ids)
                 n = max(n, int(bp.bans))
-            ob = my_bans.loc[h] if my_bans is not None and h in my_bans.index else None
+            ob = my_bans.get(h)
             comps["our_ban_habit"] = float(ob.rate) if ob is not None else 0.0
             if ob is not None:
                 ev.append(f"we banned {fr.hero(h)} {int(ob.bans)}x before")
+            if next_pick is not None:
+                pr, nn = next_pick.get(h, (0.0, 0))
+                comps["their_next_pick"] = pr
+                if nn:
+                    ev.append(f"they picked {fr.hero(h)} next {nn}x from a similar draft position")
         if ctx is not None and (my_picks or their_picks):
             # pick: h should counter their picks, fit our picks, fill our gaps.
             # ban: deny what would counter our picks / fit their picks / fill their gaps.

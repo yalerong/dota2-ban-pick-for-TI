@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,11 @@ FREE_PER_DAY = 3000  # docs say 2000, X-Rate-Limit-Remaining-Day header says 300
 
 class DailyBudgetExceeded(RuntimeError):
     pass
+
+
+def _redact(e: BaseException) -> str:
+    """requests error strings carry the full URL, i.e. `?api_key=...`; never let the key reach a log file."""
+    return re.sub(r"api_key=[^&\s'\"]+", "api_key=***", str(e))
 
 
 class OpenDota:
@@ -101,7 +107,7 @@ class OpenDota:
             try:
                 r = self.session.get(BASE + endpoint, params=params, timeout=60)
             except requests.RequestException as e:
-                log.warning("net error %s (%s), retry %d", endpoint, e, attempt)
+                log.warning("net error %s (%s), retry %d", endpoint, _redact(e), attempt)
                 time.sleep(2 ** attempt)
                 continue
             day_left = r.headers.get("X-Rate-Limit-Remaining-Day")

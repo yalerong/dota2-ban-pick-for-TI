@@ -10,7 +10,7 @@ import pandas as pd
 
 from .draft_formats import load_format
 from .draft_state import DraftState
-from .profiles import Frames, build_profile, load_frames, player_hero_stats
+from .profiles import Frames, apply_overrides, build_profile, load_config, load_frames, player_hero_stats
 from .recommend import candidates, normalize_context_actions
 
 log = logging.getLogger(__name__)
@@ -40,7 +40,10 @@ def _global_baseline(fr: Frames) -> dict:
 def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, until: int | None = None,
                patch: str | None = None, league: int | None = None, max_matches: int | None = None, ks=(1, 3, 5),
                context: bool = True, test_match_ids: list[int] | None = None,
-               context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None) -> dict:
+               context_actions: set[str] | frozenset[str] | list[str] | tuple[str, ...] | None = None,
+               cfg_overrides: list[str] | None = None, public_db=None) -> dict:
+    """`cfg_overrides`: ["pick.position_fit=1.0", ...] applied on top of scoring.yaml for this run only (experiments);
+    `public_db`: ladder matches for the context pair tables (needs context.public_weight > 0 to have any effect)."""
     if patch is None:
         r = snap.execute(
             """SELECT patch FROM matches
@@ -50,7 +53,12 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
         ).fetchone()
         patch = r[0] if r else None
     assert patch, "no patch available in snapshot before as_of"
-    fr = load_frames(snap, as_of=as_of, patch=patch)
+    kw: dict = {}
+    if cfg_overrides:
+        kw["cfg"] = apply_overrides(load_config(), cfg_overrides)
+    if public_db is not None:
+        kw["public_db"] = public_db
+    fr = load_frames(snap, as_of=as_of, patch=patch, **kw)
     assert int(fr.matches.start_time.max()) < as_of, "snapshot leaks matches at/after as_of"
     fmt_patch = patch
     fmt = load_format(snap, fmt_patch)
@@ -141,6 +149,8 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
     selected_ids = [int(mid) for mid in tests.match_id]
     test_set_hash = hashlib.sha256(json.dumps(selected_ids, separators=(",", ":")).encode()).hexdigest()[:16]
     res = {"as_of": as_of, "patch": fmt_patch, "context": bool(mode["actions"]), "context_mode": mode,
+           "overrides": list(cfg_overrides or []),
+           "public_matches": int(getattr(fr, "public", None).n_matches) if getattr(fr, "public", None) else 0,
            "test_matches": int(len(tests)),
            "test_match_ids": selected_ids, "test_set_hash": test_set_hash, "steps": sum(steps.values()),
            "overall": {w: agg(w, all_keys) for w in ("model", "baseline")},
@@ -160,7 +170,9 @@ def to_markdown(res: dict, snapshot_version: str | None) -> str:
          f"snapshot as_of {res['as_of']} (data_version {snapshot_version or '?'}), patch {res['patch']}, "
          f"{res['test_matches']} later real matches (test set {res['test_set_hash']}), {res['steps']} draft steps, "
          f"context terms {res.get('context_mode', {}).get('label', 'ALL' if res.get('context', True) else 'OFF')}.", "",
-         f"Machine context_mode: `{res.get('context_mode', {}).get('key', 'all' if res.get('context', True) else 'none')}`.", "",
+         f"Machine context_mode: `{res.get('context_mode', {}).get('key', 'all' if res.get('context', True) else 'none')}`."
+         + (f" Overrides: `{' '.join(res['overrides'])}`." if res.get("overrides") else "")
+         + (f" Ladder matches in pair tables: {res['public_matches']}." if res.get("public_matches") else ""), "",
          "Model = linear evidence score (config/scoring.yaml); baseline = global meta frequency among legal heroes. "
          "Numbers are hit rates of the actual pro action within the model's Top-k (model / baseline).", "",
          "| slice | steps | top1 | top3 | top5 |", "|---|---|---|---|---|",

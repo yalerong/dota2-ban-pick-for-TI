@@ -108,8 +108,12 @@ def _lists_section(fr: Frames, us: TeamProfile, them: TeamProfile) -> list[str]:
     return L + [""]
 
 
+CAVEAT = ("_Reference only: on the frozen blind test these candidates beat the meta-frequency baseline on bans but not on "
+          "picks (docs/baseline.md). Read them as a checklist against the roster and the match ids, not as calls._")
+
+
 def _opening_section(fr: Frames, us: TeamProfile, them: TeamProfile, fmt) -> list[str]:
-    L = ["## Opening recommendations", ""]
+    L = ["## Opening recommendations", "", CAVEAT, ""]
     for first, label in ((0, "if we act first"), (1, "if they act first")):
         st = DraftState(fmt, frozenset(fr.heroes))
         if first == 1:
