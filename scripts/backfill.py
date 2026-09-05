@@ -28,6 +28,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", required=True, help="YYYY-MM-DD (UTC); oldest match start to index")
     ap.add_argument("--reserve", type=int, default=50, help="daily calls to leave unused")
+    ap.add_argument("--full-every", type=int, default=7,
+                    help="walk the whole /proMatches index back to --since every N rounds (round 1 is always full); "
+                         "other rounds stop at the first page with no new rows, which costs 1-2 calls instead of ~150")
     a = ap.parse_args()
     since_ts = int(datetime.fromisoformat(a.since).replace(tzinfo=timezone.utc).timestamp())
 
@@ -47,7 +50,10 @@ def main() -> int:
         round_no += 1
         log.info("=== round %d, budget left %d ===", round_no, client.budget_left())
         try:
-            log.info("index: %s", sync_index(client, con, since_ts=since_ts, full=True))
+            # /proMatches pages are keyed by less_than_match_id and the newest page shifts every day, so a full walk
+            # never hits the page cache: keep it for round 1 and every --full-every rounds (late-parsed matches)
+            full = round_no == 1 or (a.full_every > 0 and round_no % a.full_every == 0)
+            log.info("index (%s): %s", "full" if full else "incremental", sync_index(client, con, since_ts=since_ts, full=full))
             st = sync_matches(client, con, since_ts=since_ts)
             log.info("details: %s", st)
         except Exception as e:

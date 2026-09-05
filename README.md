@@ -41,7 +41,25 @@ bp lineup --radiant "Axe,Invoker,Rubick,Hoodwink,Kez" --dire "Bane,Lifestealer,P
 bp lineup-eval --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --out docs/lineup-baseline.md
 ```
 
+Candidates are **reference material**: on the frozen blind test they beat the meta-frequency baseline on bans but not on
+picks (`docs/baseline.md`), so read them against the roster and the match ids rather than as calls.
+
 All scores are linear combinations of explainable statistics; weights live in `config/scoring.yaml`.
+Two further components ship switched off (weight 0) until they pass the dev-set / frozen-set protocol in `docs/baseline.md`:
+`pick.position_fit` (is the hero in the pool of a roster player who still has no hero) and `ban.their_next_pick`
+(share of the opponent's *picks* that followed the current draft prefix). Try them without touching the yaml:
+
+```bash
+bp blindtest --snapshot ... --test-matches docs/development-test-matches.json --weight pick.position_fit=1.0 --weight ban.their_next_pick=1.0
+```
+
+High-MMR ladder matches (`scripts/pull_public.py` -> `data/db/public.sqlite`) can join the counter / synergy tables as a dense
+prior: pass `--public data/db/public.sqlite` and set `context.public_weight` / `lineup.public_weight` (weight of one ladder
+game next to one pro game; 0 = off, also via `--weight`). The 1.5M-row count is vectorised and cached, so it costs seconds once.
+
+`bp report` / `bp draft` / `bp lineup` / `bp h5` keep frames, profiles and the fitted lineup model in `data/cache/` keyed by the
+DB file, filters, weights and a stamp of the source files, so match-day commands open instantly; `--no-cache` (or
+`BP_NO_CACHE=1`) rebuilds.
 Draft-context terms (`context.py`): Beta-smoothed counter matrix (hero vs enemy picks so far), synergy matrix (with own picks),
 and role-gap fill from dotaconstants tags. `bp blindtest --no-context` runs the ablation.
 
@@ -71,8 +89,14 @@ src/bp/
   report.py        P2-09: Markdown scouting report
   draft_state.py   P2-06: Captain's Mode state machine (format-parameterized)
   blindtest.py     P2-10: replay real drafts after a snapshot's as_of, Top-k hit rate vs meta-frequency baseline
-scripts/backfill.py  multi-day OpenDota backfill driver
+  lineup.py        P(radiant | ten heroes): shrunk residual tables + calibrated logistic stacker
+  public.py        ladder matches -> vectorised hero-pair counts (dense prior for context / lineup tables)
+  cache.py         pickle cache under data/cache (frames / profiles / lineup model), invalidated by code + data stamps
+scripts/backfill.py  multi-day OpenDota backfill driver (full index walk on round 1 and every --full-every rounds)
+scripts/pull_public.py  high-rank /publicMatches puller with a resumable cursor
 ```
+
+CI (`.github/workflows/ci.yml`) runs `ruff check` + `pytest` on every push and pull request.
 
 ## Notes
 

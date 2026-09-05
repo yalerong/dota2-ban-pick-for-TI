@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
+import pandas as pd
 
 # role tags that a lineup "needs"; target = minimum count in a full 5-man lineup
 DEFAULT_TARGETS = {"Initiator": 1, "Disabler": 2, "Durable": 1, "Carry": 1, "Pusher": 1, "Nuker": 1}
@@ -70,6 +71,19 @@ def build_context(fr, con: sqlite3.Connection | None = None, prior_strength: int
                     a, b = sorted((team[i][0], team[j][0]))
                     won = team[i][1]; w = team[i][2]
                     syn_n[(a, b)] += w; syn_w[(a, b)] += w * won; syn_raw[(a, b)] += 1
+    pw = float(fr.cfg.get("context", {}).get("public_weight", 0.0) or 0.0)
+    pub = getattr(fr, "public", None)
+    if pub is not None and pw > 0 and pub.n_matches:
+        # ladder games join every table (baselines included, so residuals stay consistent) at pw per game, undecayed
+        gw = gw.add(pd.Series(pub.single_n, dtype=float) * pw, fill_value=0.0)
+        ww = ww.add(pd.Series(pub.single_w, dtype=float) * pw, fill_value=0.0)
+        hero_wr = ((ww + 1) / (gw + 2)).to_dict()
+        for (a, b), n in pub.ctr_n.items():
+            wab = pub.ctr_w[(a, b)]
+            cnt_n[(a, b)] += pw * n; cnt_w[(a, b)] += pw * wab; cnt_raw[(a, b)] += n
+            cnt_n[(b, a)] += pw * n; cnt_w[(b, a)] += pw * (n - wab); cnt_raw[(b, a)] += n
+        for key, n in pub.syn_n.items():
+            syn_n[key] += pw * n; syn_w[key] += pw * pub.syn_w[key]; syn_raw[key] += n
     counter = {}
     for key, n in cnt_n.items():
         a, b = key

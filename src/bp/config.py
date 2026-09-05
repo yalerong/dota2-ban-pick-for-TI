@@ -12,7 +12,10 @@ def _load_dotenv(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":   # KEY="value" / KEY='value'
+            v = v[1:-1]
+        os.environ.setdefault(k.strip(), v)
 
 
 @dataclass

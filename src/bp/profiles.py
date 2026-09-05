@@ -25,6 +25,26 @@ def load_config(path: Path | None = None) -> dict:
     return yaml.safe_load(res.read_text(encoding="utf-8"))
 
 
+def apply_overrides(cfg: dict, overrides: list[str] | None) -> dict:
+    """`section.key=value` overrides (CLI --weight) on a deep copy of cfg; the key must already exist."""
+    import copy
+    out = copy.deepcopy(cfg)
+    for spec in overrides or []:
+        if "=" not in spec or "." not in spec.split("=", 1)[0]:
+            raise ValueError(f"override must look like section.key=value, got {spec!r}")
+        path, val = spec.split("=", 1)
+        node = out
+        keys = path.split(".")
+        for k in keys[:-1]:
+            node = node[k] if isinstance(node, dict) and k in node else None
+            if node is None:
+                raise ValueError(f"unknown config path {path!r}")
+        if not isinstance(node, dict) or keys[-1] not in node:
+            raise ValueError(f"unknown config path {path!r}")
+        node[keys[-1]] = yaml.safe_load(val)
+    return out
+
+
 # ---------------------------------------------------------------- frames
 @dataclass
 class Frames:
@@ -38,7 +58,11 @@ class Frames:
     as_of: int
     cfg: dict = field(default_factory=dict)
     roles: dict = field(default_factory=dict)
-    _ctx: object = field(default=None, repr=False)
+    public: object = None                                  # public.PublicCounts (ladder pair counts) or None
+    # memoised derived tables; init=False so dataclasses.replace(fr, roster=...) never carries a stale copy over
+    _ctx: object = field(default=None, init=False, repr=False)
+    _hero_prior: object = field(default=None, init=False, repr=False)
+    _meta_ban: object = field(default=None, init=False, repr=False)
 
     def context(self):
         """Lazily built draft-context matrices (counter / synergy / role gaps)."""
@@ -83,36 +107,41 @@ class Frames:
 
 def assign_positions(roster: pd.DataFrame) -> pd.Series:
     """1..5 per (match, side) using lane_role + GPM: mid=2; safe lane top GPM=1 else 5; off lane top GPM=3 else 4;
-    leftovers fill the missing positions by GPM order."""
-    pos = pd.Series(np.nan, index=roster.index)
-    for _, g in roster.groupby(["match_id", "side"], sort=False):
-        g = g.sort_values("gpm", ascending=False)
-        assigned: dict = {}
-        free = {1, 2, 3, 4, 5}
-
-        def take(idx, p):
-            assigned[idx] = p
-            free.discard(p)
-
-        mids = g[g.lane_role == 2]
-        if len(mids):
-            take(mids.index[0], 2)
-        for lane, top, rest in ((1, 1, 5), (3, 3, 4)):
-            rows = g[(g.lane_role == lane) & (~g.index.isin(assigned))]
-            for i, idx in enumerate(rows.index):
-                p = top if i == 0 else rest
-                if p in free:
-                    take(idx, p)
-        for idx in g.index:
-            if idx not in assigned and free:
-                take(idx, min(free))
-        for idx, p in assigned.items():
-            pos[idx] = p
+    leftovers fill the missing positions by GPM order. Vectorised: one pass over the frame instead of one pandas
+    round-trip per (match, side) group (the old loop dominated every `load_frames`)."""
+    if not len(roster):
+        return pd.Series(dtype=int, index=roster.index)
+    r = roster[["match_id", "side", "lane_role", "gpm"]].copy()
+    r["gpm"] = r.gpm.fillna(0)
+    r["_ord"] = np.arange(len(r))
+    # GPM descending inside each (match, side); the original row order breaks ties
+    r = r.sort_values(["match_id", "side", "gpm", "_ord"], ascending=[True, True, False, True], kind="mergesort")
+    lane_rank = r.groupby(["match_id", "side", "lane_role"], sort=False).cumcount()
+    r["cand"] = np.select(
+        [(r.lane_role == 2) & (lane_rank == 0), (r.lane_role == 1) & (lane_rank == 0), (r.lane_role == 1) & (lane_rank > 0),
+         (r.lane_role == 3) & (lane_rank == 0), (r.lane_role == 3) & (lane_rank > 0)],
+        [2, 1, 5, 3, 4], default=0)
+    # a claimed position goes to its highest-GPM claimant; the others fall through to the leftover fill
+    r.loc[(r.cand > 0) & r.duplicated(["match_id", "side", "cand"], keep="first"), "cand"] = 0
+    pos = pd.Series(0, index=roster.index)
+    taken = r[r.cand > 0]
+    pos.iloc[taken._ord.to_numpy()] = taken.cand.to_numpy()
+    left = r[r.cand == 0].copy()
+    if len(left):
+        groups = left[["match_id", "side"]].drop_duplicates()
+        free = groups.merge(pd.DataFrame({"pos": [1, 2, 3, 4, 5]}), how="cross")
+        free = free.merge(taken[["match_id", "side", "cand"]].rename(columns={"cand": "pos"}), how="left", indicator=True)
+        free = free[free._merge == "left_only"].sort_values(["match_id", "side", "pos"])
+        free["k"] = free.groupby(["match_id", "side"], sort=False).cumcount()
+        left["k"] = left.groupby(["match_id", "side"], sort=False).cumcount()      # k-th leftover (by GPM) -> k-th free slot
+        left = left.merge(free[["match_id", "side", "k", "pos"]], on=["match_id", "side", "k"], how="left")
+        pos.iloc[left._ord.to_numpy()] = left.pos.fillna(0).astype(int).to_numpy()   # 0 = more than five on a side
     return pos.astype(int)
 
 
 def load_frames(con: sqlite3.Connection, as_of: int | None = None, patch: str | None = None,
-                include_flagged: bool = False, cfg: dict | None = None) -> Frames:
+                include_flagged: bool = False, cfg: dict | None = None, public_db: Path | None = None) -> Frames:
+    """`public_db`: pull_public.py SQLite whose ladder matches (same patch, before as_of) feed the pair tables."""
     cfg = cfg or load_config()
     where = ["1=1"] if include_flagged else ["excluded=0"]
     args: list = []
@@ -153,7 +182,11 @@ def load_frames(con: sqlite3.Connection, as_of: int | None = None, patch: str | 
     ro["w"] = experience_weight(ro.start_time, ro.patch, as_of, patch, patch_rank, cfg)
     ev["start_time"] = mi.start_time.reindex(ev.match_id).values
     ev["w"] = experience_weight(ev.start_time, mi.patch.reindex(ev.match_id).values, as_of, patch, patch_rank, cfg)
-    return Frames(m, ev, ro, heroes, players, teams, patch_rank, as_of, cfg, roles)
+    public = None
+    if public_db is not None:
+        from .public import load_public
+        public = load_public(Path(public_db), patch, as_of)
+    return Frames(m, ev, ro, heroes, players, teams, patch_rank, as_of, cfg, roles, public)
 
 
 def experience_weight(start_time, patches, as_of: int, current_patch: str | None, patch_rank: dict, cfg: dict):
@@ -169,10 +202,12 @@ def experience_weight(start_time, patches, as_of: int, current_patch: str | None
 
 # ---------------------------------------------------------------- P2-01 player x hero
 def hero_prior(fr: Frames) -> pd.Series:
-    """Hero-level smoothed pro win rate (the Beta prior for player x hero)."""
-    gw = fr.roster.groupby("hero_id").w.sum()
-    ww = fr.roster.assign(ww=fr.roster.w * fr.roster.won).groupby("hero_id").ww.sum()
-    return ((ww + 1) / (gw + 2)).rename("prior")
+    """Hero-level smoothed pro win rate (the Beta prior for player x hero). Memoised on the frame."""
+    if fr._hero_prior is None:
+        gw = fr.roster.groupby("hero_id").w.sum()
+        ww = fr.roster.assign(ww=fr.roster.w * fr.roster.won).groupby("hero_id").ww.sum()
+        fr._hero_prior = ((ww + 1) / (gw + 2)).rename("prior")
+    return fr._hero_prior
 
 
 def player_hero_stats(fr: Frames) -> pd.DataFrame:
@@ -289,17 +324,19 @@ def current_roster(fr: Frames, team_id: int, n_games: int | None = None) -> list
 # ---------------------------------------------------------------- P2-03 targeted ban pressure
 def meta_ban_rates(fr: Frames) -> tuple[pd.Series, pd.Series]:
     """Patch-wide decayed ban rates per hero over every match in the frame: (phase-0 rate, all-phase rate).
-    Independent of any team, so a hero never banned against a given team still keeps its real meta rate."""
-    allb = fr.events[fr.events.is_pick == 0]
-    all_games_w = fr.events.drop_duplicates("match_id").w.sum()
-    gp0 = allb[allb.phase == 0].groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
-    gall = allb.groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
-    return gp0, gall
+    Independent of any team, so a hero never banned against a given team still keeps its real meta rate. Memoised."""
+    if fr._meta_ban is None:
+        allb = fr.events[fr.events.is_pick == 0]
+        all_games_w = fr.events.drop_duplicates("match_id").w.sum()
+        gp0 = allb[allb.phase == 0].groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+        gall = allb.groupby("hero_id").w.sum() / max(all_games_w, 1e-9)
+        fr._meta_ban = (gp0, gall)
+    return fr._meta_ban
 
 
-def ban_pressure(fr: Frames, team_id: int) -> pd.DataFrame:
+def ban_pressure(fr: Frames, team_id: int, e: pd.DataFrame | None = None) -> pd.DataFrame:
     """Per hero: how often opponents ban it against this team (all phases / phase 0), decayed rates, sample ids."""
-    e = team_draft(fr, team_id)
+    e = team_draft(fr, team_id) if e is None else e
     games_w = e.drop_duplicates("match_id").w.sum()
     games = e.match_id.nunique()
     b = e[(e.by_team == 0) & (e.is_pick == 0)]
@@ -317,8 +354,8 @@ def ban_pressure(fr: Frames, team_id: int) -> pd.DataFrame:
     return g.sort_values("targeted_lift", ascending=False)
 
 
-def own_bans(fr: Frames, team_id: int) -> pd.DataFrame:
-    e = team_draft(fr, team_id)
+def own_bans(fr: Frames, team_id: int, e: pd.DataFrame | None = None) -> pd.DataFrame:
+    e = team_draft(fr, team_id) if e is None else e
     b = e[(e.by_team == 1) & (e.is_pick == 0)]
     games_w = e.drop_duplicates("match_id").w.sum()
     g = b.groupby("hero_id").agg(bans=("match_id", "size"), bans_w=("w", "sum"),
@@ -328,8 +365,8 @@ def own_bans(fr: Frames, team_id: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- P2-04 team hero / phase habits
-def team_hero_stats(fr: Frames, team_id: int) -> pd.DataFrame:
-    e = team_draft(fr, team_id)
+def team_hero_stats(fr: Frames, team_id: int, e: pd.DataFrame | None = None) -> pd.DataFrame:
+    e = team_draft(fr, team_id) if e is None else e
     games_w = e.drop_duplicates("match_id").w.sum()
     p = e[(e.by_team == 1) & (e.is_pick == 1)].copy()
     p["ww"] = p.w * p.team_won
@@ -345,9 +382,9 @@ def team_hero_stats(fr: Frames, team_id: int) -> pd.DataFrame:
     return g.sort_values("picks_w", ascending=False)
 
 
-def phase_habits(fr: Frames, team_id: int) -> dict:
+def phase_habits(fr: Frames, team_id: int, e: pd.DataFrame | None = None) -> dict:
     """Per phase x (we_first) x action type: decayed hero counters for this team's own actions."""
-    e = team_draft(fr, team_id)
+    e = team_draft(fr, team_id) if e is None else e
     out: dict = defaultdict(Counter)
     ids: dict = defaultdict(lambda: defaultdict(set))
     for r in e[e.by_team == 1].itertuples():
@@ -360,9 +397,9 @@ def phase_habits(fr: Frames, team_id: int) -> dict:
     return {"counters": dict(out), "match_ids": match_ids, "games_w_by_first": games, "games": int(e.match_id.nunique())}
 
 
-def pair_synergy(fr: Frames, team_id: int, min_count: int = 3) -> pd.DataFrame:
+def pair_synergy(fr: Frames, team_id: int, min_count: int = 3, e: pd.DataFrame | None = None) -> pd.DataFrame:
     """Hero pairs this team picks together more than independence predicts (simple 'system hero' proxy)."""
-    e = team_draft(fr, team_id)
+    e = team_draft(fr, team_id) if e is None else e
     p = e[(e.by_team == 1) & (e.is_pick == 1)]
     games_w = e.drop_duplicates("match_id").w.sum()
     single = p.groupby("hero_id").w.sum() / max(games_w, 1e-9)
@@ -384,13 +421,13 @@ def pair_synergy(fr: Frames, team_id: int, min_count: int = 3) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- P2-05 opponent response edges
-def response_edges(fr: Frames, team_id: int, max_prefix: int = 3) -> dict:
+def response_edges(fr: Frames, team_id: int, max_prefix: int = 3, e: pd.DataFrame | None = None) -> dict:
     """Recent action prefix -> Counter(hero this team played next).
 
     Prefixes retain at most ``max_prefix`` actions and rel_team is 0 for this
     team, 1 for the opponent. The empty prefix is the unconditional fallback.
     """
-    e = team_draft(fr, team_id)
+    e = team_draft(fr, team_id) if e is None else e
     edges: dict = defaultdict(Counter)
     for mid, g in e.groupby("match_id"):
         g = g.sort_values("order_no")
@@ -398,12 +435,19 @@ def response_edges(fr: Frames, team_id: int, max_prefix: int = 3) -> dict:
         for s in range(1, len(seq)):
             if seq[s][1] != 0:
                 continue
-            edges[()][seq[s][2]] += seq[s][3]
-            edges[("_n",)][seq[s][2]] += 1
+            is_pick, hero, w = seq[s][0], seq[s][2], seq[s][3]
+            edges[()][hero] += w
+            edges[("_n",)][hero] += 1
+            if is_pick:                              # picks only: what this team takes next (ban targets for the opponent)
+                edges[("_pick",)][hero] += w
+                edges[("_pick", "_n")][hero] += 1
             for width in range(1, min(max_prefix, s) + 1):
                 prefix = tuple(x[:3] for x in seq[s - width:s])
-                edges[prefix][seq[s][2]] += seq[s][3]
-                edges[("_n",) + prefix][seq[s][2]] += 1
+                edges[prefix][hero] += w
+                edges[("_n",) + prefix][hero] += 1
+                if is_pick:
+                    edges[("_pick",) + prefix][hero] += w
+                    edges[("_pick", "_n") + prefix][hero] += 1
     return dict(edges)
 
 
@@ -417,6 +461,19 @@ def lookup_response(edges: dict, prefix: tuple) -> list[tuple[int, float, int]]:
     if not c:
         return []
     n = edges.get(("_n",) + prefix, Counter())
+    return sorted(((h, w, n[h]) for h, w in c.items()), key=lambda x: (-x[1], x[0]))
+
+
+def lookup_next_pick(edges: dict, prefix: tuple) -> list[tuple[int, float, int]]:
+    """Like lookup_response but over the team's *picks* only (its next ban is not a ban target for us)."""
+    prefix = tuple(prefix[-3:])
+    c = edges.get(("_pick",) + prefix)
+    while not c and prefix:
+        prefix = prefix[1:]
+        c = edges.get(("_pick",) + prefix)
+    if not c:
+        return []
+    n = edges.get(("_pick", "_n") + prefix, Counter())
     return sorted(((h, w, n[h]) for h, w in c.items()), key=lambda x: (-x[1], x[0]))
 
 
@@ -435,19 +492,66 @@ class TeamProfile:
     pairs: pd.DataFrame
     edges: dict
 
-    def sig(self, hero_id: int) -> tuple[float, pd.Series | None]:
-        s = self.stats[self.stats.hero_id == hero_id]
-        if not len(s):
-            return 0.0, None
-        row = s.sort_values("signature", ascending=False).iloc[0]
-        return float(row.signature), row
+    # per-hero lookup dicts, built on first use: recommend.candidates() asks for every legal hero at every draft step,
+    # and a DataFrame filter per hero (~150 us) was the dominant cost of a blind test
+    _sig_by_hero: dict | None = field(default=None, init=False, repr=False)
+    _rows_by_hero: dict = field(default_factory=dict, init=False, repr=False)
+    _pool: dict | None = field(default=None, init=False, repr=False)
+
+    def __getstate__(self):
+        # itertuples rows are module-local namedtuples that do not pickle; the memo dicts are rebuilt on demand
+        d = dict(self.__dict__)
+        d.update(_sig_by_hero=None, _rows_by_hero={}, _pool=None)
+        return d
+
+    def sig(self, hero_id: int) -> tuple[float, object | None]:
+        """Best signature score for the hero across the roster + that row (a namedtuple with the stats columns)."""
+        if self._sig_by_hero is None:
+            self._sig_by_hero = {}
+            if len(self.stats):
+                best = self.stats.sort_values("signature", ascending=False, kind="mergesort").drop_duplicates("hero_id")
+                self._sig_by_hero = {int(r.hero_id): (float(r.signature), r) for r in best.itertuples(index=False)}
+        return self._sig_by_hero.get(int(hero_id), (0.0, None))
+
+    def by_hero(self, table: str) -> dict:
+        """hero_id -> row (namedtuple) for `ban_pressure`, `hero_stats` or `own_bans`."""
+        if table not in self._rows_by_hero:
+            df = getattr(self, table)
+            self._rows_by_hero[table] = {int(r.hero_id): r for r in df.itertuples(index=False)} if len(df) else {}
+        return self._rows_by_hero[table]
+
+    def pool(self) -> dict[int, dict[int, int]]:
+        """account_id -> {hero_id: games} for the roster (from `stats`)."""
+        if self._pool is None:
+            self._pool = {}
+            if len(self.stats):
+                for r in self.stats.itertuples(index=False):
+                    self._pool.setdefault(int(r.account_id), {})[int(r.hero_id)] = int(r.games)
+        return self._pool
+
+    def open_positions(self, picked: list[int]) -> list[int]:
+        """Roster accounts that still need a hero after `picked` (this team's picks so far). Each picked hero is
+        attributed to the not-yet-assigned roster player with the most games on it; an unknown hero binds nobody."""
+        pool = self.pool()
+        free = list(self.roster)
+        for h in picked:
+            owners = [(pool[a].get(h, 0), a) for a in free if pool.get(a, {}).get(h, 0) > 0]
+            if owners:
+                free.remove(max(owners)[1])
+        return free
+
+    def can_take(self, hero_id: int, free: list[int]) -> list[int]:
+        """Accounts among `free` that have this hero in their pool (played it at least once)."""
+        pool = self.pool()
+        return [a for a in free if pool.get(a, {}).get(int(hero_id), 0) > 0]
 
 
 def build_profile(fr: Frames, team_id: int, all_stats: pd.DataFrame | None = None) -> TeamProfile:
+    e = team_draft(fr, team_id)          # computed once and shared by every per-team table below
     roster = current_roster(fr, team_id)
-    bp = ban_pressure(fr, team_id)
+    bp = ban_pressure(fr, team_id, e)
     stats = all_stats if all_stats is not None else player_hero_stats(fr)
     st = signature_scores(stats[stats.account_id.isin(roster)], fr, bp) if roster else stats.iloc[0:0]
     return TeamProfile(team_id, fr.team(team_id), roster, int(team_matches(fr, team_id).match_id.nunique()), st, bp,
-                       own_bans(fr, team_id), team_hero_stats(fr, team_id), phase_habits(fr, team_id),
-                       pair_synergy(fr, team_id), response_edges(fr, team_id))
+                       own_bans(fr, team_id, e), team_hero_stats(fr, team_id, e), phase_habits(fr, team_id, e),
+                       pair_synergy(fr, team_id, e=e), response_edges(fr, team_id, e=e))

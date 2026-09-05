@@ -232,6 +232,79 @@ def test_blindtest_cli_context_actions_and_markdown_labels(tmp_path, monkeypatch
     assert "Machine context_mode: `none`" in out
 
 
+@pytest.mark.parametrize(
+    "argv, expected_public",
+    [
+        (["--public", "before.sqlite", "--no-cache", "lineup-eval", "--snapshot", "unused.sqlite"], "before.sqlite"),
+        (["lineup-eval", "--snapshot", "unused.sqlite", "--public", "after.sqlite", "--no-cache"], "after.sqlite"),
+    ],
+)
+def test_data_options_work_before_or_after_the_subcommand(monkeypatch, argv, expected_public):
+    import bp.__main__ as cli
+
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_lineup_eval", lambda a: seen.update(public=a.public, no_cache=a.no_cache))
+    monkeypatch.setattr(cli.cache, "ENABLED", True)
+
+    cli.main(argv)
+
+    assert seen == {"public": expected_public, "no_cache": True}
+    assert cli.cache.ENABLED is False
+
+
+@pytest.mark.parametrize(
+    "context, overrides, expected_matches, expected_weight",
+    [
+        (True, None, 0, 0.0),
+        (False, ["context.public_weight=0.5"], 0, 0.0),
+        (True, ["context.public_weight=0.5"], 500, 0.5),
+    ],
+)
+def test_blindtest_reports_only_active_public_counts(
+    tmp_path, monkeypatch, context, overrides, expected_matches, expected_weight
+):
+    import bp.blindtest as blindtest
+
+    snap = connect(tmp_path / "snap.sqlite")
+    live = connect(tmp_path / "live.sqlite")
+    _insert_match(snap, 1, "7.41", 1000)
+    snap.commit()
+
+    class FakeFrames:
+        matches = pd.DataFrame({"start_time": [1000], "patch": ["7.41"]})
+        events = pd.DataFrame(columns=["phase", "is_pick", "hero_id", "w"])
+        teams = {}
+        public = SimpleNamespace(n_matches=500)
+
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+    def fake_load_frames(*args, cfg=None, **kwargs):
+        return FakeFrames(cfg or blindtest.load_config())
+
+    monkeypatch.setattr(blindtest, "load_frames", fake_load_frames)
+    monkeypatch.setattr(blindtest, "load_format", lambda *args, **kwargs: ((0, 0),))
+    monkeypatch.setattr(blindtest, "player_hero_stats", lambda fr: {})
+
+    res = blindtest.blind_test(
+        snap,
+        live,
+        as_of=2000,
+        patch="7.41",
+        context=context,
+        cfg_overrides=overrides,
+        public_db=tmp_path / "public.sqlite",
+    )
+
+    assert res["public_matches"] == expected_matches
+    assert res["public_weight"] == expected_weight
+    markdown = blindtest.to_markdown(res, "test")
+    if expected_matches:
+        assert "Ladder matches in pair tables: 500 at weight 0.5" in markdown
+    else:
+        assert "Ladder matches in pair tables" not in markdown
+
+
 class FakeLineupFrames:
     """Minimal Frames stand-in: 60 clean 5v5 matches on ten heroes, enough to fit the lineup stacker."""
     roles: dict = {}
@@ -290,6 +363,32 @@ def test_lineup_json_writes_a_single_json_document(tmp_path, monkeypatch, capsys
                                    patch=None, as_of=None, k=None, json=True))
     doc = json.loads(capsys.readouterr().out)  # the whole stdout must parse as one JSON document
     assert 0 < doc["p_radiant"] < 1 and doc["n_train"] == 60
+
+
+def test_lineup_reuses_cached_frames_without_building_profile_stats(tmp_path, monkeypatch, capsys):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+
+    calls = {"frames": 0, "stats": 0}
+
+    def counting_load(*args, **kwargs):
+        calls["frames"] += 1
+        return FakeLineupFrames(2_000_000_000)
+
+    def counting_stats(*args, **kwargs):
+        calls["stats"] += 1
+        return {}
+
+    monkeypatch.setattr(profiles, "load_frames", counting_load)
+    monkeypatch.setattr(profiles, "player_hero_stats", counting_stats)
+    args = SimpleNamespace(db=_lineup_db(tmp_path), match=5, radiant=None, dire=None, swap=[],
+                           patch=None, as_of=None, k=None, json=True)
+
+    cli.cmd_lineup(args)
+    cli.cmd_lineup(args)
+    capsys.readouterr()
+
+    assert calls == {"frames": 1, "stats": 0}
 
 
 def test_lineup_eval_rejects_duplicate_fixed_test_ids(tmp_path, monkeypatch):

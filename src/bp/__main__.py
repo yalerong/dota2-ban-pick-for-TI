@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import cache
 from .config import CONFIG
 from .db import connect, TABLES
 from .opendota import OpenDota
@@ -113,19 +114,62 @@ def cmd_status(a):
 
 
 # ---------------------------------------------------------------- phase 2
+def _public(a):
+    return Path(a.public) if getattr(a, "public", None) else None
+
+
+def _frame_kwargs(a) -> tuple[dict, dict]:
+    """(cfg, extra kwargs for load_frames): --weight overrides and --public only when given."""
+    from .profiles import apply_overrides, load_config
+    overrides = getattr(a, "weight", None)
+    cfg = apply_overrides(load_config(), overrides)
+    kw: dict = {}
+    if overrides:
+        kw["cfg"] = cfg
+    if _public(a) is not None:
+        kw["public_db"] = _public(a)
+    return cfg, kw
+
+
+def _cached_frames(a, con, as_of, patch, *, with_stats=True):
+    """Frames and optional player stats from cache when DB inputs, filters, weights and code are unchanged."""
+    from .profiles import load_frames, player_hero_stats
+    cfg, kw = _frame_kwargs(a)
+    key = cache.key("frames", cache.file_stamp(a.db or CONFIG.db_path), as_of, patch, cfg, cache.file_stamp(_public(a)))
+    hit = cache.get("frames", key)
+    if hit is not None:
+        fr, stats = hit
+        if with_stats and stats is None:
+            stats = player_hero_stats(fr)
+            cache.put("frames", key, (fr, stats))
+        return fr, stats, key
+    fr = load_frames(con, as_of=as_of, patch=patch, **kw)
+    stats = player_hero_stats(fr) if with_stats else None
+    cache.put("frames", key, (fr, stats))
+    return fr, stats, key
+
+
+def _cached_profile(fr, stats, key, team_id):
+    from .profiles import build_profile
+    k = f"{key}_{team_id}"
+    p = cache.get("profile", k)
+    if p is None:
+        p = build_profile(fr, team_id, stats)
+        cache.put("profile", k, p)
+    return p
+
+
 def _frames_and_profiles(a):
-    from .profiles import load_frames, build_profile, player_hero_stats
     con = _con(a)
     as_of = _ts(getattr(a, "as_of", None))
     if as_of is None:
         as_of = _snapshot_as_of(con)
     patch = a.patch or _default_patch(con, as_of)
-    fr = load_frames(con, as_of=as_of, patch=patch)
+    fr, stats, key = _cached_frames(a, con, as_of, patch)
     us, them = fr.team_id(a.us), fr.team_id(a.them)
     if us is None or them is None:
         sys.exit(f"team not found: us={a.us}->{us} them={a.them}->{them} (try `bp teams --q NAME`)")
-    stats = player_hero_stats(fr)
-    return con, fr, build_profile(fr, us, stats), build_profile(fr, them, stats)
+    return con, fr, _cached_profile(fr, stats, key, us), _cached_profile(fr, stats, key, them)
 
 
 def _fmt(con, fr, patch):
@@ -162,17 +206,15 @@ def cmd_report(a):
 
 def cmd_h5(a):
     """Single-file mobile page: ladder helper + an offline library of selectable professional teams."""
-    from .profiles import load_frames, build_profile, player_hero_stats
     from .report import build_report
     from .h5 import _team_payload, ladder_payload, matchup_payload, render
     con = _con(a)
     # pin the patch before loading: the page is labelled with one patch, so every number on it must come from that patch
     patch = a.patch or _default_patch(con, _ts(a.as_of))
-    fr = load_frames(con, as_of=_ts(a.as_of), patch=patch)
+    fr, stats, key = _cached_frames(a, con, _ts(a.as_of), patch)
     fmt, patch = _fmt(con, fr, patch)
     if fmt is None:
         print(f"warning: no draft format for patch {patch}; the Draft Board will be disabled (run `bp formats`)", file=sys.stderr)
-    stats = player_hero_stats(fr)
     matchups = []
     profiles = {}
 
@@ -181,7 +223,7 @@ def cmd_h5(a):
         if team_id is None:
             sys.exit(f"team not found: {query!r} (try `bp teams --q NAME`)")
         if team_id not in profiles:
-            profiles[team_id] = build_profile(fr, team_id, stats)
+            profiles[team_id] = _cached_profile(fr, stats, key, team_id)
         return profiles[team_id]
 
     for query in a.team or []:
@@ -215,6 +257,7 @@ def cmd_draft(a):
     scripted = [x.strip() for x in a.actions.split(",")] if a.actions else []
     print(f"{us.name} vs {them.name}, patch {patch}, {'we' if a.first == 'us' else 'they'} act first. "
           f"Type hero name, 'undo', 'state' or 'quit'.")
+    print("Candidates are reference only: they beat the meta baseline on bans, not on picks (docs/baseline.md).")
     while not st.done:
         who = "WE" if (st.next_team == 0) == (a.first == "us") else "THEY"
         print(f"\n--- {who} to {'PICK' if st.next_is_pick else 'BAN'} ---")
@@ -259,7 +302,8 @@ def cmd_blindtest(a):
         test_match_ids = raw["match_ids"] if isinstance(raw, dict) else raw
     context_actions = {"all": ("ban", "pick"), "ban": ("ban",), "pick": ("pick",), "none": ()}[a.context_actions]
     res = blind_test(snap, live, as_of, until=_ts(a.until), patch=a.patch, league=a.league, max_matches=a.max,
-                     context=not a.no_context, test_match_ids=test_match_ids, context_actions=context_actions)
+                     context=not a.no_context, test_match_ids=test_match_ids, context_actions=context_actions,
+                     cfg_overrides=getattr(a, "weight", None), public_db=_public(a))
     md = to_markdown(res, _data_version(snap))
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
@@ -280,10 +324,21 @@ def _parse_heroes(fr, spec: str, what: str) -> list[int]:
     return ids
 
 
+def _lineup_model(a, fr, patch, k):
+    """Fitted lineup model, cached per (DB, as_of, patch, weights, public DB, k)."""
+    from . import lineup as L
+    key = cache.key("lineup", cache.file_stamp(a.db or CONFIG.db_path), fr.as_of, patch, fr.cfg.get("lineup", {}),
+                    fr.cfg.get("context", {}).get("targets", {}), cache.file_stamp(_public(a)), k)
+    model = cache.get("lineup", key)
+    if model is None:
+        model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}),
+                      k=k, extra=getattr(fr, "public", None))
+        cache.put("lineup", key, model)
+    return model
+
+
 def cmd_lineup(a):
     """P(radiant wins | ten heroes) from the calibrated lineup model; --match loads a real draft, --swap edits it."""
-    from .profiles import load_frames
-    from . import lineup as L
     con = _con(a)
     as_of = _ts(a.as_of)
     radiant = dire = None
@@ -301,7 +356,7 @@ def cmd_lineup(a):
         if not (a.radiant and a.dire):
             sys.exit("give --match ID or both --radiant and --dire (five comma-separated heroes each)")
         patch = a.patch or _default_patch(con, as_of)
-    fr = load_frames(con, as_of=as_of, patch=patch)
+    fr = _cached_frames(a, con, as_of, patch, with_stats=False)[0]
     if radiant is None:
         radiant, dire = _parse_heroes(fr, a.radiant, "--radiant"), _parse_heroes(fr, a.dire, "--dire")
     for spec in a.swap or []:
@@ -318,14 +373,16 @@ def cmd_lineup(a):
             sys.exit(f"--swap {spec!r}: {fr.hero(old)} is not in either lineup")
     if set(radiant) & set(dire) or len(set(radiant)) != 5 or len(set(dire)) != 5:
         sys.exit("lineups must be ten distinct heroes")
-    model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}), k=a.k)
+    model = _lineup_model(a, fr, patch, a.k)
     pred = model.predict(radiant, dire)
     if a.json:                             # --json mode: exactly one JSON document on stdout, no human output around it
         _out({"p_radiant": pred.p_radiant, "radiant": radiant, "dire": dire, "features": pred.features,
-              "contributions": pred.contributions, "thin_cells": len(pred.thin_cells), "k": model.tables.k, "n_train": model.n_train})
+              "contributions": pred.contributions, "thin_cells": len(pred.thin_cells), "k": model.tables.k, "n_train": model.n_train,
+              "n_public": model.n_public})
         return
     names = lambda ids: ", ".join(fr.hero(h) for h in ids)
-    print(f"patch {patch}, trained on {model.n_train} pro matches before {datetime.fromtimestamp(fr.as_of, timezone.utc):%Y-%m-%d}, k={model.tables.k}")
+    extra = f" + {model.n_public} ladder x {model.public_weight:g}" if model.n_public else ""
+    print(f"patch {patch}, trained on {model.n_train} pro matches{extra} before {datetime.fromtimestamp(fr.as_of, timezone.utc):%Y-%m-%d}, k={model.tables.k}")
     print(f"Radiant: {names(radiant)}\nDire:    {names(dire)}")
     print(f"\nP(radiant) = {100 * pred.p_radiant:.1f}%   P(dire) = {100 * (1 - pred.p_radiant):.1f}%")
     print("logit contributions: " + ", ".join(f"{k} {v:+.3f}" for k, v in pred.contributions.items()))
@@ -344,9 +401,11 @@ def cmd_lineup_eval(a):
     as_of = int(snap.execute("SELECT value FROM meta WHERE key='as_of_ts'").fetchone()[0])
     live = _con(a)
     patch = a.patch or _default_patch(snap, as_of)
-    fr = load_frames(snap, as_of=as_of, patch=patch)
-    model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}), k=a.k)
-    fr_live = load_frames(live, as_of=_ts(a.until), patch=patch)
+    cfg, kw = _frame_kwargs(a)
+    fr = load_frames(snap, as_of=as_of, patch=patch, **kw)
+    model = L.fit(L.lineup_matches(fr), fr.roles, fr.cfg.get("context", {}).get("targets", {}), fr.cfg.get("lineup", {}),
+                  k=a.k, extra=getattr(fr, "public", None))
+    fr_live = load_frames(live, as_of=_ts(a.until), patch=patch, **({"cfg": cfg} if "cfg" in kw else {}))
     tests = [m for m in L.lineup_matches(fr_live) if m.start_time >= as_of]
     label = f"all clean {patch} matches after as_of"
     if a.test_matches:
@@ -374,6 +433,16 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="bp", description="Dota 2 BP scouting")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--db", help="sqlite path (default data/db/bp.sqlite); pass a snapshot for as-of analysis")
+    public_help = ("ladder DB from scripts/pull_public.py; its matches join the counter/synergy tables at "
+                   "context.public_weight / lineup.public_weight per game (0 = ignored)")
+    no_cache_help = "rebuild frames / profiles / lineup model instead of reading data/cache"
+
+    def add_data_options(parser, *, after_subcommand=False):
+        default = argparse.SUPPRESS if after_subcommand else None
+        parser.add_argument("--public", metavar="PATH", default=default, help=public_help)
+        parser.add_argument("--no-cache", action="store_true", default=default, help=no_cache_help)
+
+    add_data_options(p)
     sp = p.add_subparsers(dest="cmd", required=True)
 
     s = sp.add_parser("constants", help="load heroes/patches from dotaconstants"); s.add_argument("--offline", action="store_true"); s.set_defaults(f=cmd_constants)
@@ -390,6 +459,7 @@ def main(argv=None):
     s = sp.add_parser("teams", help="find team ids"); s.add_argument("--q", default=""); s.add_argument("--limit", type=int, default=30); s.set_defaults(f=cmd_teams)
     for name, fn, hlp in (("report", cmd_report, "pre-match scouting report (markdown)"), ("draft", cmd_draft, "interactive draft board")):
         s = sp.add_parser(name, help=hlp)
+        add_data_options(s, after_subcommand=True)
         s.add_argument("--us", required=True); s.add_argument("--them", required=True)
         s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD; only use matches before this")
         if name == "report":
@@ -399,31 +469,41 @@ def main(argv=None):
             s.add_argument("--actions", help="comma-separated scripted actions (non-interactive)")
         s.set_defaults(f=fn)
     s = sp.add_parser("h5", help="single-file mobile page (ladder helper + pro BP report/board)")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--matchup", action="append", metavar="US|THEM", help='repeatable, e.g. --matchup "Team Spirit|Team Liquid"')
     s.add_argument("--team", action="append", help="repeatable team to include in the offline professional-training selector")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
     s = sp.add_parser("lineup", help="P(radiant wins | ten heroes): calibrated lineup win probability")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--radiant", help="five comma-separated heroes"); s.add_argument("--dire", help="five comma-separated heroes")
     s.add_argument("--match", type=int, help="load both lineups from a real match (trains only on matches before it)")
     s.add_argument("--swap", action="append", metavar="OLD=NEW", help="repeatable: replace a hero in either lineup")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD; only train on matches before this")
     s.add_argument("--k", type=float, help="pair prior strength (default: chosen on out-of-fold log-loss)")
     s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_lineup)
+    s.add_argument("--weight", action="append", metavar="SECTION.KEY=VALUE", help="override a scoring.yaml value for this run")
     s = sp.add_parser("lineup-eval", help="train lineup model on a snapshot, test on later real matches; calibration report")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--k", type=float)
     s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) restricting the test set"); s.add_argument("--out")
+    s.add_argument("--weight", action="append", metavar="SECTION.KEY=VALUE", help="override a scoring.yaml value for this run")
     s.set_defaults(f=cmd_lineup_eval)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
     s.add_argument("--max", type=int, help="cap for auto-selected matches (default 150); with --test-matches it must cover the whole list")
     s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms")
     s.add_argument("--context-actions", choices=["all", "ban", "pick", "none"], default="all",
                    help="where to apply counter/synergy/gap terms; --no-context still forces none")
     s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) fixing the evaluation match order")
+    s.add_argument("--weight", action="append", metavar="SECTION.KEY=VALUE",
+                   help="override a scoring.yaml value for this run, e.g. --weight pick.position_fit=1.0 (repeatable)")
     s.set_defaults(f=cmd_blindtest)
 
     a = p.parse_args(argv)
+    if a.no_cache:
+        cache.ENABLED = False
     for stream in (sys.stdout, sys.stderr):   # player names contain non-GBK glyphs; never crash on a Windows console
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
