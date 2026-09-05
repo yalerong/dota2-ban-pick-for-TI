@@ -296,6 +296,13 @@ def test_file_stamp_includes_resolved_file_identity(tmp_path):
     assert cache.file_stamp(first) != cache.file_stamp(second)
 
 
+def test_file_stamp_distinguishes_a_missing_path_from_no_path(tmp_path):
+    missing = tmp_path / "requested-but-missing.sqlite"
+
+    assert cache.file_stamp(None) is None
+    assert cache.file_stamp(missing) is not None
+
+
 def test_cli_report_reuses_cached_frames_and_profiles(tmp_path, league, monkeypatch):
     import bp.__main__ as cli
     import bp.profiles as profiles

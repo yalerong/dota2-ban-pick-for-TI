@@ -131,16 +131,20 @@ def _frame_kwargs(a) -> tuple[dict, dict]:
     return cfg, kw
 
 
-def _cached_frames(a, con, as_of, patch):
-    """(Frames, player x hero stats) from data/cache when the DB, filters, weights and code are unchanged."""
+def _cached_frames(a, con, as_of, patch, *, with_stats=True):
+    """Frames and optional player stats from cache when DB inputs, filters, weights and code are unchanged."""
     from .profiles import load_frames, player_hero_stats
     cfg, kw = _frame_kwargs(a)
     key = cache.key("frames", cache.file_stamp(a.db or CONFIG.db_path), as_of, patch, cfg, cache.file_stamp(_public(a)))
     hit = cache.get("frames", key)
     if hit is not None:
-        return hit[0], hit[1], key
+        fr, stats = hit
+        if with_stats and stats is None:
+            stats = player_hero_stats(fr)
+            cache.put("frames", key, (fr, stats))
+        return fr, stats, key
     fr = load_frames(con, as_of=as_of, patch=patch, **kw)
-    stats = player_hero_stats(fr)
+    stats = player_hero_stats(fr) if with_stats else None
     cache.put("frames", key, (fr, stats))
     return fr, stats, key
 
@@ -335,7 +339,6 @@ def _lineup_model(a, fr, patch, k):
 
 def cmd_lineup(a):
     """P(radiant wins | ten heroes) from the calibrated lineup model; --match loads a real draft, --swap edits it."""
-    from .profiles import load_frames
     con = _con(a)
     as_of = _ts(a.as_of)
     radiant = dire = None
@@ -353,7 +356,7 @@ def cmd_lineup(a):
         if not (a.radiant and a.dire):
             sys.exit("give --match ID or both --radiant and --dire (five comma-separated heroes each)")
         patch = a.patch or _default_patch(con, as_of)
-    fr = load_frames(con, as_of=as_of, patch=patch, **_frame_kwargs(a)[1])
+    fr = _cached_frames(a, con, as_of, patch, with_stats=False)[0]
     if radiant is None:
         radiant, dire = _parse_heroes(fr, a.radiant, "--radiant"), _parse_heroes(fr, a.dire, "--dire")
     for spec in a.swap or []:

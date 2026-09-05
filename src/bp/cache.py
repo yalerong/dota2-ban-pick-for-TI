@@ -23,15 +23,17 @@ def _dir() -> Path:
     return DIR or (CONFIG.data_dir / "cache")
 
 
-def file_stamp(path: Path | str | None) -> tuple[str, int, int] | None:
-    """(resolved path, size, mtime_ns) of a file; None if absent."""
+def file_stamp(path: Path | str | None) -> tuple[str, int | None, int | None] | None:
+    """Requested file identity and stamp; None only when no path was requested."""
     if path is None:
         return None
-    p = Path(path)
-    if not p.exists():
-        return None
-    st = p.stat()
-    return (os.path.normcase(str(p.resolve())), st.st_size, st.st_mtime_ns)
+    p = Path(path).resolve()
+    identity = os.path.normcase(str(p))
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return (identity, None, None)
+    return (identity, st.st_size, st.st_mtime_ns)
 
 
 def source_stamp(pkg_dir: Path | None = None) -> str:

@@ -365,6 +365,32 @@ def test_lineup_json_writes_a_single_json_document(tmp_path, monkeypatch, capsys
     assert 0 < doc["p_radiant"] < 1 and doc["n_train"] == 60
 
 
+def test_lineup_reuses_cached_frames_without_building_profile_stats(tmp_path, monkeypatch, capsys):
+    import bp.__main__ as cli
+    import bp.profiles as profiles
+
+    calls = {"frames": 0, "stats": 0}
+
+    def counting_load(*args, **kwargs):
+        calls["frames"] += 1
+        return FakeLineupFrames(2_000_000_000)
+
+    def counting_stats(*args, **kwargs):
+        calls["stats"] += 1
+        return {}
+
+    monkeypatch.setattr(profiles, "load_frames", counting_load)
+    monkeypatch.setattr(profiles, "player_hero_stats", counting_stats)
+    args = SimpleNamespace(db=_lineup_db(tmp_path), match=5, radiant=None, dire=None, swap=[],
+                           patch=None, as_of=None, k=None, json=True)
+
+    cli.cmd_lineup(args)
+    cli.cmd_lineup(args)
+    capsys.readouterr()
+
+    assert calls == {"frames": 1, "stats": 0}
+
+
 def test_lineup_eval_rejects_duplicate_fixed_test_ids(tmp_path, monkeypatch):
     import bp.__main__ as cli
     import bp.profiles as profiles
