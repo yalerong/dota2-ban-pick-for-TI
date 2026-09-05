@@ -1,7 +1,7 @@
 """Pickle cache under data/cache so `bp draft` / `bp report` / `bp lineup` open instantly on match day.
 
 Keys always include a stamp of the source files (size + mtime of every .py / .yaml / .html in the package), so any code
-or weight change invalidates every entry automatically; the DB file stamp does the same for new data. Disable with
+or weight change invalidates every entry automatically; the DB identity and file stamp do the same for new data. Disable with
 `bp --no-cache ...` or BP_NO_CACHE=1. Entries are plain pickles: delete the directory whenever in doubt.
 """
 from __future__ import annotations
@@ -23,15 +23,15 @@ def _dir() -> Path:
     return DIR or (CONFIG.data_dir / "cache")
 
 
-def file_stamp(path: Path | str | None) -> tuple | None:
-    """(size, mtime_ns) of a file; None if absent - cheap and changes whenever the file is rewritten."""
+def file_stamp(path: Path | str | None) -> tuple[str, int, int] | None:
+    """(resolved path, size, mtime_ns) of a file; None if absent."""
     if path is None:
         return None
     p = Path(path)
     if not p.exists():
         return None
     st = p.stat()
-    return (st.st_size, st.st_mtime_ns)
+    return (os.path.normcase(str(p.resolve())), st.st_size, st.st_mtime_ns)
 
 
 def source_stamp(pkg_dir: Path | None = None) -> str:

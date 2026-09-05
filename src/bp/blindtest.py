@@ -148,9 +148,15 @@ def blind_test(snap: sqlite3.Connection, live: sqlite3.Connection, as_of: int, u
     all_keys = list(steps)
     selected_ids = [int(mid) for mid in tests.match_id]
     test_set_hash = hashlib.sha256(json.dumps(selected_ids, separators=(",", ":")).encode()).hexdigest()[:16]
+    frame_cfg = getattr(fr, "cfg", None) or load_config()
+    public_weight = float(frame_cfg.get("context", {}).get("public_weight", 0.0) or 0.0)
+    public = getattr(fr, "public", None)
+    public_matches = int(public.n_matches) if mode["actions"] and public_weight > 0 and public else 0
+    if not public_matches:
+        public_weight = 0.0
     res = {"as_of": as_of, "patch": fmt_patch, "context": bool(mode["actions"]), "context_mode": mode,
            "overrides": list(cfg_overrides or []),
-           "public_matches": int(getattr(fr, "public", None).n_matches) if getattr(fr, "public", None) else 0,
+           "public_matches": public_matches, "public_weight": public_weight,
            "test_matches": int(len(tests)),
            "test_match_ids": selected_ids, "test_set_hash": test_set_hash, "steps": sum(steps.values()),
            "overall": {w: agg(w, all_keys) for w in ("model", "baseline")},
@@ -172,7 +178,8 @@ def to_markdown(res: dict, snapshot_version: str | None) -> str:
          f"context terms {res.get('context_mode', {}).get('label', 'ALL' if res.get('context', True) else 'OFF')}.", "",
          f"Machine context_mode: `{res.get('context_mode', {}).get('key', 'all' if res.get('context', True) else 'none')}`."
          + (f" Overrides: `{' '.join(res['overrides'])}`." if res.get("overrides") else "")
-         + (f" Ladder matches in pair tables: {res['public_matches']}." if res.get("public_matches") else ""), "",
+         + (f" Ladder matches in pair tables: {res['public_matches']} at weight {res['public_weight']:g}."
+            if res.get("public_matches") else ""), "",
          "Model = linear evidence score (config/scoring.yaml); baseline = global meta frequency among legal heroes. "
          "Numbers are hit rates of the actual pro action within the model's Top-k (model / baseline).", "",
          "| slice | steps | top1 | top3 | top5 |", "|---|---|---|---|---|",

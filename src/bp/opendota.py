@@ -130,7 +130,10 @@ class OpenDota:
                 log.warning("%s -> %s, backoff", endpoint, r.status_code)
                 time.sleep(2 ** attempt * 2)
                 continue
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                raise RuntimeError(_redact(e)) from None
         raise RuntimeError(f"gave up on {endpoint} after {retries} tries")
 
     def get_cached(self, endpoint: str, key: str, params: dict | None = None, path: str | None = None) -> Any:

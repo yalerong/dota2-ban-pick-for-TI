@@ -37,6 +37,25 @@ def test_network_errors_are_logged_without_the_api_key(tmp_path, monkeypatch, ca
     assert caplog.text.count("api_key=***") == 2 and "SECRET-KEY-123" not in caplog.text
 
 
+def test_http_errors_are_raised_without_the_api_key(tmp_path):
+    class Unauthorized:
+        headers = {}
+
+        def get(self, url, params=None, timeout=None):
+            response = requests.Response()
+            response.status_code = 401
+            response.reason = "Unauthorized"
+            response.url = f"{url}?api_key={params['api_key']}&x=1"
+            return response
+
+    c = OpenDota(api_key="SECRET-KEY-123", raw_dir=tmp_path, per_min=100000)
+    c.session = Unauthorized()
+    with pytest.raises(RuntimeError) as raised:
+        c._get("/matches/1", retries=1)
+    assert "api_key=***" in str(raised.value)
+    assert "SECRET-KEY-123" not in str(raised.value)
+
+
 # ---------------------------------------------------------------- 10: KEY="value" in .env
 def test_dotenv_strips_matching_quotes(tmp_path, monkeypatch):
     from bp.config import _load_dotenv
@@ -260,6 +279,21 @@ def test_cache_roundtrip_and_source_stamp(tmp_path, league):
     cache.ENABLED = True
     cache.put("x", "k", object())                                    # unpicklable: warning, no entry, no exception
     assert cache.get("x", "k") is None or pickle.loads(pickle.dumps(1)) == 1
+
+
+def test_file_stamp_includes_resolved_file_identity(tmp_path):
+    import os
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    first.write_bytes(b"different database A")
+    second.write_bytes(b"different database B")
+    same_ns = 1_700_000_000_000_000_000
+    os.utime(first, ns=(same_ns, same_ns))
+    os.utime(second, ns=(same_ns, same_ns))
+
+    assert first.stat().st_size == second.stat().st_size
+    assert first.stat().st_mtime_ns == second.stat().st_mtime_ns
+    assert cache.file_stamp(first) != cache.file_stamp(second)
 
 
 def test_cli_report_reuses_cached_frames_and_profiles(tmp_path, league, monkeypatch):

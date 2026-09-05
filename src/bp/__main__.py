@@ -430,9 +430,16 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="bp", description="Dota 2 BP scouting")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--db", help="sqlite path (default data/db/bp.sqlite); pass a snapshot for as-of analysis")
-    p.add_argument("--public", metavar="PATH", help="ladder DB from scripts/pull_public.py; its matches join the counter/synergy "
-                                                    "tables at context.public_weight / lineup.public_weight per game (0 = ignored)")
-    p.add_argument("--no-cache", action="store_true", help="rebuild frames / profiles / lineup model instead of reading data/cache")
+    public_help = ("ladder DB from scripts/pull_public.py; its matches join the counter/synergy tables at "
+                   "context.public_weight / lineup.public_weight per game (0 = ignored)")
+    no_cache_help = "rebuild frames / profiles / lineup model instead of reading data/cache"
+
+    def add_data_options(parser, *, after_subcommand=False):
+        default = argparse.SUPPRESS if after_subcommand else None
+        parser.add_argument("--public", metavar="PATH", default=default, help=public_help)
+        parser.add_argument("--no-cache", action="store_true", default=default, help=no_cache_help)
+
+    add_data_options(p)
     sp = p.add_subparsers(dest="cmd", required=True)
 
     s = sp.add_parser("constants", help="load heroes/patches from dotaconstants"); s.add_argument("--offline", action="store_true"); s.set_defaults(f=cmd_constants)
@@ -449,6 +456,7 @@ def main(argv=None):
     s = sp.add_parser("teams", help="find team ids"); s.add_argument("--q", default=""); s.add_argument("--limit", type=int, default=30); s.set_defaults(f=cmd_teams)
     for name, fn, hlp in (("report", cmd_report, "pre-match scouting report (markdown)"), ("draft", cmd_draft, "interactive draft board")):
         s = sp.add_parser(name, help=hlp)
+        add_data_options(s, after_subcommand=True)
         s.add_argument("--us", required=True); s.add_argument("--them", required=True)
         s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD; only use matches before this")
         if name == "report":
@@ -458,11 +466,13 @@ def main(argv=None):
             s.add_argument("--actions", help="comma-separated scripted actions (non-interactive)")
         s.set_defaults(f=fn)
     s = sp.add_parser("h5", help="single-file mobile page (ladder helper + pro BP report/board)")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--matchup", action="append", metavar="US|THEM", help='repeatable, e.g. --matchup "Team Spirit|Team Liquid"')
     s.add_argument("--team", action="append", help="repeatable team to include in the offline professional-training selector")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
     s = sp.add_parser("lineup", help="P(radiant wins | ten heroes): calibrated lineup win probability")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--radiant", help="five comma-separated heroes"); s.add_argument("--dire", help="five comma-separated heroes")
     s.add_argument("--match", type=int, help="load both lineups from a real match (trains only on matches before it)")
     s.add_argument("--swap", action="append", metavar="OLD=NEW", help="repeatable: replace a hero in either lineup")
@@ -471,11 +481,13 @@ def main(argv=None):
     s.add_argument("--json", action="store_true"); s.set_defaults(f=cmd_lineup)
     s.add_argument("--weight", action="append", metavar="SECTION.KEY=VALUE", help="override a scoring.yaml value for this run")
     s = sp.add_parser("lineup-eval", help="train lineup model on a snapshot, test on later real matches; calibration report")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--k", type=float)
     s.add_argument("--test-matches", help="JSON list (or {match_ids: [...]}) restricting the test set"); s.add_argument("--out")
     s.add_argument("--weight", action="append", metavar="SECTION.KEY=VALUE", help="override a scoring.yaml value for this run")
     s.set_defaults(f=cmd_lineup_eval)
     s = sp.add_parser("blindtest", help="replay real drafts after a snapshot's as_of; Top-k hit rates")
+    add_data_options(s, after_subcommand=True)
     s.add_argument("--snapshot", required=True); s.add_argument("--until"); s.add_argument("--patch"); s.add_argument("--league", type=int)
     s.add_argument("--max", type=int, help="cap for auto-selected matches (default 150); with --test-matches it must cover the whole list")
     s.add_argument("--out"); s.add_argument("--no-context", action="store_true", help="ablation: disable counter/synergy/gap terms")
