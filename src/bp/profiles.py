@@ -507,10 +507,12 @@ class TeamProfile:
     def sig(self, hero_id: int) -> tuple[float, object | None]:
         """Best signature score for the hero across the roster + that row (a namedtuple with the stats columns)."""
         if self._sig_by_hero is None:
-            self._sig_by_hero = {}
+            built = {}
             if len(self.stats):
                 best = self.stats.sort_values("signature", ascending=False, kind="mergesort").drop_duplicates("hero_id")
-                self._sig_by_hero = {int(r.hero_id): (float(r.signature), r) for r in best.itertuples(index=False)}
+                built = {int(r.hero_id): (float(r.signature), r) for r in best.itertuples(index=False)}
+            # Publish only the complete map: concurrent readers must never observe a partially initialized cache.
+            self._sig_by_hero = built
         return self._sig_by_hero.get(int(hero_id), (0.0, None))
 
     def by_hero(self, table: str) -> dict:
@@ -523,10 +525,11 @@ class TeamProfile:
     def pool(self) -> dict[int, dict[int, int]]:
         """account_id -> {hero_id: games} for the roster (from `stats`)."""
         if self._pool is None:
-            self._pool = {}
+            built: dict[int, dict[int, int]] = {}
             if len(self.stats):
                 for r in self.stats.itertuples(index=False):
-                    self._pool.setdefault(int(r.account_id), {})[int(r.hero_id)] = int(r.games)
+                    built.setdefault(int(r.account_id), {})[int(r.hero_id)] = int(r.games)
+            self._pool = built
         return self._pool
 
     def open_positions(self, picked: list[int]) -> list[int]:
