@@ -310,6 +310,8 @@ def test_h5_page_builds(league, tmp_path):
     assert len(data["ladder"]["cm_seq"]) == len(fmt) and data["ladder"]["counter"] and data["ladder"]["synergy"]
     assert {t["id"] for t in data["teams"]} == {TEAM_A, TEAM_B}
     assert 'id="us-team"' in page and 'id="them-team"' in page and 'id="swap-teams"' in page
+    assert "authoritativeBoardRecs" in page and "fetch(DRAFT_API" in page
+    assert "不会自动替对方落子" in page
     assert "const esc =" in page and "离线包至少需要 2 支战队" in page
     m = data["matchups"][0]
     assert m["us"]["name"] == A.name and m["them"]["roster"] and str(FIRST_BAN_VS_A) in m["us"]["sig"]

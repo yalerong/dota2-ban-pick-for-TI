@@ -205,7 +205,7 @@ def cmd_report(a):
 
 
 def cmd_h5(a):
-    """Single-file mobile page: ladder helper + an offline library of selectable professional teams."""
+    """Single-file mobile page, optionally backed by the authoritative local recommender."""
     from .report import build_report
     from .h5 import _team_payload, ladder_payload, matchup_payload, render
     con = _con(a)
@@ -236,9 +236,19 @@ def cmd_h5(a):
         matchups.append(matchup_payload(fr, pu, pt, build_report(fr, pu, pt, fmt, patch, _data_version(con))))
     meta = {"patch": patch or "all", "matches": int(len(fr.matches)),
             "as_of": datetime.fromtimestamp(fr.as_of, timezone.utc).strftime("%Y-%m-%d"), "data_version": _data_version(con) or "live-db"}
+    team_payloads = [_team_payload(fr, p) for p in profiles.values()]
+    if a.serve:
+        if fmt is None:
+            sys.exit(f"cannot serve Draft Board without a draft format for patch {patch}")
+        if len(profiles) < 2:
+            sys.exit('h5 --serve needs at least two teams: repeat --team or give --matchup "Us|Them"')
+        from .web import draft_response, serve
+        meta["draft_api"] = "/api/recommend"
+        html = render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta, team_payloads)
+        serve(html, lambda payload: draft_response(fr, fmt, profiles, payload), a.host, a.port, not a.no_open)
+        return
     out = Path(a.out) if a.out else CONFIG.root / "h5" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    team_payloads = [_team_payload(fr, p) for p in profiles.values()]
     out.write_text(render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta, team_payloads), encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size // 1024} KB, {len(team_payloads)} teams, {len(matchups)} full reports)")
     print(f"phone on the same Wi-Fi: python -m http.server 8000 -d \"{out.parent}\"  then open http://<this-pc-ip>:8000/")
@@ -473,7 +483,12 @@ def main(argv=None):
     s.add_argument("--matchup", action="append", metavar="US|THEM", help='repeatable, e.g. --matchup "Team Spirit|Team Liquid"')
     s.add_argument("--team", action="append", help="repeatable team to include in the offline professional-training selector")
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
-    s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded"); s.set_defaults(f=cmd_h5)
+    s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded")
+    s.add_argument("--serve", action="store_true", help="serve H5 with the authoritative Python recommendation API")
+    s.add_argument("--host", default="127.0.0.1", help="bind address for --serve (default 127.0.0.1)")
+    s.add_argument("--port", type=int, default=8000, help="port for --serve (default 8000)")
+    s.add_argument("--no-open", action="store_true", help="do not open a browser for --serve")
+    s.set_defaults(f=cmd_h5)
     s = sp.add_parser("lineup", help="P(radiant wins | ten heroes): calibrated lineup win probability")
     add_data_options(s, after_subcommand=True)
     s.add_argument("--radiant", help="five comma-separated heroes"); s.add_argument("--dire", help="five comma-separated heroes")

@@ -153,7 +153,7 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
       <input id="b-search" placeholder="输入英雄，点选即执行当前一手" autocomplete="off">
       <div class="dd" id="b-dd"></div>
     </div>
-    <div class="card"><b id="b-rec-title">推荐</b><div class="warn">H5 简化评分：绝活/meta + 克制/协同/补位，不含习惯与回应项；权威结果用 bp draft</div><div id="b-recs"></div></div>
+    <div class="card"><b id="b-rec-title">推荐</b><div class="warn" id="b-rec-mode"></div><div id="b-recs"></div></div>
   </div>
 </div>
 
@@ -335,8 +335,10 @@ renderLadder();
 // ====================================================== pro
 const MU = D.matchups;
 const TEAM_LIST = D.teams || [], TEAM = Object.fromEntries(TEAM_LIST.map(t => [t.id, t]));
+const DRAFT_API = D.meta.draft_api || '';
 const firstMatchup = MU[0] || {}, firstUs = firstMatchup.us || TEAM_LIST[0], firstThem = firstMatchup.them || TEAM_LIST[1];
 const ps = {us: firstUs ? firstUs.id : null, them: firstThem ? firstThem.id : null, sub: 'report', first: 'us', actions: [], q: ''};
+let boardRequest = 0;
 function fillTeamSelect(el, selected) {
   el.innerHTML = TEAM_LIST.slice().sort((a, b) => a.name.localeCompare(b.name)).map(t => `<option value="${t.id}"${t.id === selected ? ' selected' : ''}>${esc(t.name)} · ${t.games}场</option>`).join('');
 }
@@ -411,7 +413,27 @@ function boardRecs(m, st, step) {
     return {id: h.id, name: h.name, score, detail: parts.join(' · ') || '—'};
   }).sort((a, b) => b.score - a.score).slice(0, 10);
 }
-function renderBoard() {
+function authoritativeRows(rows) {
+  return rows.map(row => {
+    const detail = [`置信度 ${(100 * row.confidence).toFixed(0)}% · 样本 ${row.samples}`]
+      .concat((row.evidence || []).slice(0, 4).map(esc));
+    if (row.predicted_response && row.predicted_response.length) detail.push(`对手常见回应：${esc(row.predicted_response.join('、'))}`);
+    if (row.insufficient) detail.push('样本不足，仅作参考');
+    return {id: row.hero_id, score: row.score, detail: detail.join('<br>')};
+  });
+}
+async function authoritativeBoardRecs() {
+  const response = await fetch(DRAFT_API, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({us: ps.us, them: ps.them, first: ps.first, actions: ps.actions, k: 10})
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return authoritativeRows(data.candidates || []);
+}
+async function renderBoard() {
+  const request = ++boardRequest;
   const m = currentMatchup(); if (!m) return;
   if (!SEQ.length) { $('#b-status').textContent = '该版本没有 Draft 格式数据（先跑 bp formats），看板不可用'; $('#b-seq').innerHTML = ''; $('#b-recs').innerHTML = ''; $('#b-search').disabled = true; return; }
   const st = boardState(), step = ps.actions.length, done = step >= SEQ.length;
@@ -421,10 +443,31 @@ function renderBoard() {
   SEQ.forEach(([p, t], i) => { const s = document.createElement('span'); s.className = teamAt(i) + (i < step ? ' done' : '') + (i === step ? ' cur' : ''); s.textContent = p ? 'P' : 'B'; s.title = i < step ? name(ps.actions[i]) : ''; seqEl.appendChild(s); });
   $('#b-us').classList.toggle('turn', !done && teamAt(step) === 'us'); $('#b-them').classList.toggle('turn', !done && teamAt(step) === 'them');
   $('#b-status').textContent = done ? 'Draft 完成' : `第 ${step + 1}/${SEQ.length} 手：${teamAt(step) === 'us' ? m.us.name : m.them.name} ${SEQ[step][0] ? 'Pick' : 'Ban'}`;
-  if (done) { $('#b-recs').innerHTML = ''; return; }
+  if (done) { $('#b-recs').innerHTML = ''; $('#b-rec-mode').textContent = 'Draft 已完成'; return; }
   const team = teamAt(step);
-  $('#b-rec-title').textContent = (team === 'us' ? '我方' : '对方可能的') + (SEQ[step][0] ? ' Pick' : ' Ban');
-  recList($('#b-recs'), boardRecs(m, st, step), x => x.toFixed(2));
+  if (team === 'them') {
+    $('#b-rec-title').textContent = '等待对方' + (SEQ[step][0] ? ' Pick' : ' Ban');
+    $('#b-rec-mode').textContent = '录入对方实际动作后，系统会在我方回合重新计算建议；不会自动替对方落子。';
+    $('#b-recs').innerHTML = '<div class="mut">请在上方输入对方刚刚选择或禁用的英雄。</div>';
+    return;
+  }
+  $('#b-rec-title').textContent = '我方' + (SEQ[step][0] ? ' Pick' : ' Ban') + ' 建议';
+  if (!DRAFT_API) {
+    $('#b-rec-mode').textContent = '离线简化评分：绝活/meta + 克制/协同/补位；运行 bp h5 --serve 可使用 Python 权威引擎。';
+    recList($('#b-recs'), boardRecs(m, st, step), x => x.toFixed(2));
+    return;
+  }
+  $('#b-rec-mode').textContent = '由本机 Python recommend.py 计算：包含战队习惯、证据、回应与阵容上下文。';
+  $('#b-recs').innerHTML = '<div class="mut">正在计算权威候选…</div>';
+  try {
+    const rows = await authoritativeBoardRecs();
+    if (request !== boardRequest) return;
+    recList($('#b-recs'), rows, x => x.toFixed(2));
+  } catch (error) {
+    if (request !== boardRequest) return;
+    $('#b-rec-mode').textContent = `权威引擎暂不可用（${error.message}），已降级到离线简化评分。`;
+    recList($('#b-recs'), boardRecs(m, st, step), x => x.toFixed(2));
+  }
 }
 function renderPro() {
   const m = currentMatchup();

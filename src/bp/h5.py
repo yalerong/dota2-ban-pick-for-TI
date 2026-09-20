@@ -1,8 +1,8 @@
 """Mobile (H5) single-file page: ladder draft helper + pro-match BP (report viewer and a lite Captain's Mode board).
 
 Everything the page needs is embedded as JSON, so the file works from file:// or a plain `python -m http.server`.
-The in-page scoring is a deliberately *simplified* client-side mirror of recommend.py (context terms + signature /
-meta rates, no habit / response terms); the authoritative numbers stay in `bp report` / `bp draft`.
+That offline path uses a deliberately *simplified* client-side mirror of recommend.py (context terms + signature /
+meta rates, no habit / response terms). `bp h5 --serve` instead connects the board to the authoritative Python recommender.
 """
 from __future__ import annotations
 import base64

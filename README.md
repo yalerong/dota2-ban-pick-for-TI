@@ -34,12 +34,18 @@ bp update --since 2026-03-24 --limit 1500   # index+details+normalize+formats+ch
 bp teams --q spirit                                   # resolve team ids / names
 bp report --us "Team Spirit" --them "Team Liquid"     # -> reports/<us>-vs-<them>-<patch>.md
 bp draft  --us "Team Spirit" --them "Team Liquid" --first them   # interactive board; hero names, undo, state, quit
+bp h5 --matchup "Team Spirit|Team Liquid" --serve      # browser board backed by the authoritative Python recommender
 bp --db data/snapshots/snapshot_20260801_<hash>.sqlite report --us ... --them ...   # as-of analysis on a frozen snapshot
 bp blindtest --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --test-matches docs/baseline-test-matches.json --out docs/baseline.md
 bp lineup --match 8960991322 --swap "Juggernaut=Kez"           # P(radiant | ten heroes), trained only on matches before that one
 bp lineup --radiant "Axe,Invoker,Rubick,Hoodwink,Kez" --dire "Bane,Lifestealer,Pangolier,Mirana,Dark Seer"
 bp lineup-eval --snapshot data/snapshots/snapshot_20260801_<hash>.sqlite --patch 7.41 --out docs/lineup-baseline.md
 ```
+
+`bp h5 --serve` opens a local browser page and serves `POST /api/recommend` from the same process, so the board uses
+`recommend.py` rather than the simplified offline JavaScript score. Opponent actions are always entered manually; candidates
+appear only on our turns. Add `--host 0.0.0.0` to use the page from a phone on the same Wi-Fi. Plain `bp h5` still writes a
+single offline HTML file and falls back to the lighter in-page score.
 
 Candidates are **reference material**: on the frozen blind test they beat the meta-frequency baseline on bans but not on
 picks (`docs/baseline.md`), so read them against the roster and the match ids rather than as calls.
@@ -88,6 +94,7 @@ src/bp/
   context.py       counter / synergy / lineup-gap terms fed into recommend (unseen pair == 0)
   report.py        P2-09: Markdown scouting report
   draft_state.py   P2-06: Captain's Mode state machine (format-parameterized)
+  web.py           local H5 server: authoritative recommendation API, request validation, no extra dependencies
   blindtest.py     P2-10: replay real drafts after a snapshot's as_of, Top-k hit rate vs meta-frequency baseline
   lineup.py        P(radiant | ten heroes): shrunk residual tables + calibrated logistic stacker
   public.py        ladder matches -> vectorised hero-pair counts (dense prior for context / lineup tables)
