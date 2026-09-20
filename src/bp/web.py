@@ -5,6 +5,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import socket
 from typing import Any, Callable, Mapping
 import webbrowser
 
@@ -14,6 +15,23 @@ from .recommend import candidates
 
 log = logging.getLogger(__name__)
 MAX_REQUEST_BYTES = 64 * 1024
+
+
+class _IPv6ThreadingHTTPServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
+def _server_class(host: str) -> type[ThreadingHTTPServer]:
+    return _IPv6ThreadingHTTPServer if ":" in host else ThreadingHTTPServer
+
+
+def _display_urls(host: str, port: int) -> tuple[str, str | None]:
+    if host == "0.0.0.0":
+        return f"http://127.0.0.1:{port}/", f"http://<this-pc-ip>:{port}/"
+    if host == "::":
+        return f"http://[::1]:{port}/", f"http://[<this-pc-ipv6>]:{port}/"
+    display_host = f"[{host}]" if ":" in host else host
+    return f"http://{display_host}:{port}/", None
 
 
 def _team_for(relative_team: int, first: str) -> str:
@@ -138,10 +156,11 @@ def serve(
     open_browser: bool = True,
 ) -> None:
     """Serve the H5 page and recommendation API until interrupted."""
-    server = ThreadingHTTPServer((host, port), _handler(html, scorer))
-    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    url = f"http://{display_host}:{server.server_port}/"
+    server = _server_class(host)((host, port), _handler(html, scorer))
+    url, phone_url = _display_urls(host, server.server_port)
     print(f"BP web: {url} (Ctrl+C to stop)")
+    if phone_url:
+        print(f"Phone on the same Wi-Fi: {phone_url}")
     if open_browser:
         webbrowser.open(url)
     try:

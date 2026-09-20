@@ -311,6 +311,7 @@ def test_h5_page_builds(league, tmp_path):
     assert {t["id"] for t in data["teams"]} == {TEAM_A, TEAM_B}
     assert 'id="us-team"' in page and 'id="them-team"' in page and 'id="swap-teams"' in page
     assert "authoritativeBoardRecs" in page and "fetch(DRAFT_API" in page
+    assert "AbortController" in page and "signal: controller.signal" in page and "clearTimeout(timeout)" in page
     assert "不会自动替对方落子" in page
     assert "const esc =" in page and "离线包至少需要 2 支战队" in page
     m = data["matchups"][0]

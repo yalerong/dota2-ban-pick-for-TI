@@ -336,6 +336,7 @@ renderLadder();
 const MU = D.matchups;
 const TEAM_LIST = D.teams || [], TEAM = Object.fromEntries(TEAM_LIST.map(t => [t.id, t]));
 const DRAFT_API = D.meta.draft_api || '';
+const RECOMMEND_TIMEOUT_MS = 5000;
 const firstMatchup = MU[0] || {}, firstUs = firstMatchup.us || TEAM_LIST[0], firstThem = firstMatchup.them || TEAM_LIST[1];
 const ps = {us: firstUs ? firstUs.id : null, them: firstThem ? firstThem.id : null, sub: 'report', first: 'us', actions: [], q: ''};
 let boardRequest = 0;
@@ -423,14 +424,21 @@ function authoritativeRows(rows) {
   });
 }
 async function authoritativeBoardRecs() {
-  const response = await fetch(DRAFT_API, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({us: ps.us, them: ps.them, first: ps.first, actions: ps.actions, k: 10})
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return authoritativeRows(data.candidates || []);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RECOMMEND_TIMEOUT_MS);
+  try {
+    const response = await fetch(DRAFT_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({us: ps.us, them: ps.them, first: ps.first, actions: ps.actions, k: 10}),
+      signal: controller.signal
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return authoritativeRows(data.candidates || []);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 async function renderBoard() {
   const request = ++boardRequest;
