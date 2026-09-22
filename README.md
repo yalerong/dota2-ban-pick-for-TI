@@ -6,7 +6,7 @@
 
 Evidence-backed Captain's Mode scouting for professional and semi-professional Dota 2 teams. The tool builds an OpenDota dataset, profiles teams and players, recommends picks and bans with traceable match evidence, and provides both terminal and browser draft boards.
 
-**Current release: v0.1.0 — scouting MVP.** It includes the Phase 1 data foundation and Phase 2 scouting workflow.
+**Current release: v0.2.0 — hybrid scouting MVP.** It keeps the local statistical recommender authoritative and adds optional AI tactical interpretation for its candidate set.
 
 ## Features
 
@@ -15,6 +15,7 @@ Evidence-backed Captain's Mode scouting for professional and semi-professional D
 - Player hero pools, signature scores, targeted-ban pressure, team draft habits, synergy, counters, and opponent responses.
 - Evidence-backed Pick/Ban candidates and Markdown matchup reports.
 - Interactive terminal and browser draft boards.
+- Optional OpenAI-compatible tactical interpretation with validated, local-candidate-only output and automatic fallback.
 - Ten-hero lineup win-probability model and frozen-snapshot evaluation commands.
 
 > [!IMPORTANT]
@@ -26,12 +27,12 @@ Evidence-backed Captain's Mode scouting for professional and semi-professional D
 - Internet access for OpenDota and dotaconstants synchronization.
 - An optional `OPENDOTA_API_KEY` for higher practical request capacity. Without a key, OpenDota's free-tier limits apply.
 
-## Install v0.1.0
+## Install v0.2.0
 
 Install the wheel attached to the GitHub release:
 
 ```bash
-python -m pip install https://github.com/yalerong/dota2-ban-pick-for-TI/releases/download/v0.1.0/dota2_bp-0.1.0-py3-none-any.whl
+python -m pip install https://github.com/yalerong/dota2-ban-pick-for-TI/releases/download/v0.2.0/dota2_bp-0.2.0-py3-none-any.whl
 bp --help
 ```
 
@@ -64,6 +65,30 @@ bp h5 --matchup "Team Spirit|Team Liquid" --serve
 ```
 
 The first synchronization can take time because match details are downloaded within the OpenDota request budget. Later runs are incremental and resumable.
+
+## Optional AI tactical analysis
+
+The AI layer never generates the statistical candidate list. It receives the current draft state and the local Top candidates, then returns a validated recommendation, reasons, risks, and alternatives selected only from that list. If the provider fails or returns invalid output, the browser keeps showing the local recommendations.
+
+Every user supplies their own OpenAI-compatible provider credentials at runtime. Never put a real API Key in the repository, README, command history, or a file intended for distribution. Set it in the user's local shell environment and start the local server with `--ai`:
+
+```bash
+# macOS / Linux
+export AI_API_KEY="your-key"
+export AI_MODEL="your-model"
+export AI_BASE_URL="https://api.openai.com/v1"  # optional; this is the default
+
+# Windows PowerShell
+$env:AI_API_KEY="your-key"
+$env:AI_MODEL="your-model"
+$env:AI_BASE_URL="https://api.openai.com/v1"   # optional
+
+bp h5 --matchup "Team Spirit|Team Liquid" --serve --ai
+```
+
+`OPENAI_API_KEY` and `OPENAI_BASE_URL` are also accepted. The model and base URL can be overridden with `--ai-model` and `--ai-base-url`. Values such as `your-key` above are placeholders only. Each installation uses its own Key; no provider credentials ship in the repository or release package. The API Key stays in the local Python process and is never embedded in the page; the draft state, strategy text, local candidates, and their evidence are sent to the configured provider.
+
+For safety, AI mode only serves on a loopback host (`127.0.0.1`, `localhost`, or `::1`) and remote providers must use HTTPS. Plain HTTP remains available for a model gateway running on the same machine. Run without `--ai` if the browser board must be exposed to a phone over local Wi-Fi.
 
 ## Development
 

@@ -82,6 +82,7 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
 .dd div:last-child{border-bottom:0}.dd div.used{opacity:.35}
 .dd img{width:32px;height:32px;border-radius:6px}.dd small{color:var(--mut)}
 .en{color:var(--mut);font-size:11px;margin-left:4px}
+.ai-result{margin-top:8px;padding:9px;border:1px solid rgba(79,140,255,.35);border-radius:10px;background:rgba(79,140,255,.08);font-size:12px}.ai-result b{color:#a9c4ff}.ai-result ul{margin:5px 0;padding-left:18px}.ai-result .risk{color:var(--warn)}
 </style>
 </head>
 <body>
@@ -153,7 +154,8 @@ details.sec.l3{margin-left:8px}details.sec>div{padding:0 10px 8px}
       <input id="b-search" placeholder="输入英雄，点选即执行当前一手" autocomplete="off">
       <div class="dd" id="b-dd"></div>
     </div>
-    <div class="card"><b id="b-rec-title">推荐</b><div class="warn" id="b-rec-mode"></div><div id="b-recs"></div></div>
+    <div class="card" id="b-ai-controls" hidden><b>AI 战术偏好（可选）</b><input id="b-strategy" maxlength="500" placeholder="例如：需要稳定先手、十分钟抱团推进"><div class="mut" style="margin-top:5px">当前局面、候选和证据会发送给你配置的外部 AI 服务；API Key 只保留在本机。</div></div>
+    <div class="card"><b id="b-rec-title">推荐</b><div class="warn" id="b-rec-mode"></div><div id="b-ai-result"></div><div id="b-recs"></div></div>
   </div>
 </div>
 
@@ -336,7 +338,8 @@ renderLadder();
 const MU = D.matchups;
 const TEAM_LIST = D.teams || [], TEAM = Object.fromEntries(TEAM_LIST.map(t => [t.id, t]));
 const DRAFT_API = D.meta.draft_api || '';
-const RECOMMEND_TIMEOUT_MS = 5000;
+const AI_ENABLED = !!D.meta.ai_adviser;
+const RECOMMEND_TIMEOUT_MS = AI_ENABLED ? 25000 : 5000;
 const firstMatchup = MU[0] || {}, firstUs = firstMatchup.us || TEAM_LIST[0], firstThem = firstMatchup.them || TEAM_LIST[1];
 const ps = {us: firstUs ? firstUs.id : null, them: firstThem ? firstThem.id : null, sub: 'report', first: 'us', actions: [], q: ''};
 let boardRequest = 0;
@@ -361,6 +364,8 @@ $('#swap-teams').onclick = () => {
 $('#pack-teams').textContent = `${TEAM_LIST.length} 支战队`;
 $('#pack-date').textContent = `数据 ${D.meta.as_of}`;
 syncTeamSelectors();
+$('#b-ai-controls').hidden = !AI_ENABLED;
+$('#b-strategy').onchange = () => renderBoard();
 if (TEAM_LIST.length < 2) {
   [$('#us-team'), $('#them-team'), $('#swap-teams'), ...$('#sub-row').querySelectorAll('button')].forEach(el => el.disabled = true);
 }
@@ -423,6 +428,16 @@ function authoritativeRows(rows) {
     return {id: row.hero_id, score: row.score, detail: detail.join('<br>')};
   });
 }
+function renderAiAdvice(advice, error) {
+  const el = $('#b-ai-result');
+  if (!AI_ENABLED) { el.innerHTML = ''; return; }
+  if (error) { el.innerHTML = `<div class="ai-result risk">${esc(error)}</div>`; return; }
+  if (!advice) { el.innerHTML = ''; return; }
+  const reasons = (advice.reasons || []).map(x => `<li>${esc(x)}</li>`).join('');
+  const risks = (advice.risks || []).map(x => `<li>${esc(x)}</li>`).join('');
+  const alternatives = (advice.alternatives || []).map(esc).join('、') || '无';
+  el.innerHTML = `<div class="ai-result"><b>AI 战术解读：${esc(advice.recommended_hero)}</b><ul>${reasons}</ul>${risks ? `<div class="risk">风险</div><ul>${risks}</ul>` : ''}<div>备选：${alternatives}</div></div>`;
+}
 async function authoritativeBoardRecs() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), RECOMMEND_TIMEOUT_MS);
@@ -430,12 +445,12 @@ async function authoritativeBoardRecs() {
     const response = await fetch(DRAFT_API, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({us: ps.us, them: ps.them, first: ps.first, actions: ps.actions, k: 10}),
+      body: JSON.stringify({us: ps.us, them: ps.them, first: ps.first, actions: ps.actions, k: 10, strategy: $('#b-strategy').value}),
       signal: controller.signal
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    return authoritativeRows(data.candidates || []);
+    return {rows: authoritativeRows(data.candidates || []), advice: data.ai_advice, aiError: data.ai_error};
   } finally {
     clearTimeout(timeout);
   }
@@ -451,26 +466,30 @@ async function renderBoard() {
   SEQ.forEach(([p, t], i) => { const s = document.createElement('span'); s.className = teamAt(i) + (i < step ? ' done' : '') + (i === step ? ' cur' : ''); s.textContent = p ? 'P' : 'B'; s.title = i < step ? name(ps.actions[i]) : ''; seqEl.appendChild(s); });
   $('#b-us').classList.toggle('turn', !done && teamAt(step) === 'us'); $('#b-them').classList.toggle('turn', !done && teamAt(step) === 'them');
   $('#b-status').textContent = done ? 'Draft 完成' : `第 ${step + 1}/${SEQ.length} 手：${teamAt(step) === 'us' ? m.us.name : m.them.name} ${SEQ[step][0] ? 'Pick' : 'Ban'}`;
-  if (done) { $('#b-recs').innerHTML = ''; $('#b-rec-mode').textContent = 'Draft 已完成'; return; }
+  if (done) { $('#b-recs').innerHTML = ''; renderAiAdvice(null, null); $('#b-rec-mode').textContent = 'Draft 已完成'; return; }
   const team = teamAt(step);
   if (team === 'them') {
     $('#b-rec-title').textContent = '等待对方' + (SEQ[step][0] ? ' Pick' : ' Ban');
     $('#b-rec-mode').textContent = '录入对方实际动作后，系统会在我方回合重新计算建议；不会自动替对方落子。';
     $('#b-recs').innerHTML = '<div class="mut">请在上方输入对方刚刚选择或禁用的英雄。</div>';
+    renderAiAdvice(null, null);
     return;
   }
   $('#b-rec-title').textContent = '我方' + (SEQ[step][0] ? ' Pick' : ' Ban') + ' 建议';
   if (!DRAFT_API) {
     $('#b-rec-mode').textContent = '离线简化评分：绝活/meta + 克制/协同/补位；运行 bp h5 --serve 可使用 Python 权威引擎。';
     recList($('#b-recs'), boardRecs(m, st, step), x => x.toFixed(2));
+    renderAiAdvice(null, null);
     return;
   }
-  $('#b-rec-mode').textContent = '由本机 Python recommend.py 计算：包含战队习惯、证据、回应与阵容上下文。';
+  $('#b-rec-mode').textContent = AI_ENABLED ? `本机统计引擎生成候选；${D.meta.ai_model} 仅提供战术解读。` : '由本机 Python recommend.py 计算：包含战队习惯、证据、回应与阵容上下文。';
   $('#b-recs').innerHTML = '<div class="mut">正在计算权威候选…</div>';
+  renderAiAdvice(null, null);
   try {
-    const rows = await authoritativeBoardRecs();
+    const result = await authoritativeBoardRecs();
     if (request !== boardRequest) return;
-    recList($('#b-recs'), rows, x => x.toFixed(2));
+    renderAiAdvice(result.advice, result.aiError);
+    recList($('#b-recs'), result.rows, x => x.toFixed(2));
   } catch (error) {
     if (request !== boardRequest) return;
     $('#b-rec-mode').textContent = `权威引擎暂不可用（${error.message}），已降级到离线简化评分。`;

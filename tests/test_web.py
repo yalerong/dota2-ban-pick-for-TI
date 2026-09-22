@@ -85,6 +85,60 @@ def test_draft_response_waits_for_recorded_opponent_action(league):
     assert response["candidates"] == []
 
 
+def test_draft_response_adds_validated_ai_advice_without_replacing_candidates(league):
+    fr, profiles, fmt = _setup(league)
+    seen = {}
+
+    def advise(context):
+        seen.update(context)
+        return {
+            "recommended_hero": context["candidates"][1]["hero"],
+            "reasons": ["matches the requested tempo"],
+            "risks": ["thin sample"],
+            "alternatives": [context["candidates"][0]["hero"]],
+        }
+
+    response = draft_response(
+        fr, fmt, profiles,
+        {"us": TEAM_A, "them": TEAM_B, "first": "us", "actions": [], "strategy": "play fast"},
+        adviser=advise,
+    )
+
+    assert len(response["candidates"]) == 5
+    assert response["ai_advice"]["recommended_hero"] == seen["candidates"][1]["hero"]
+    assert seen["strategy"] == "play fast"
+    assert seen["us"] == profiles[TEAM_A].name
+    assert seen["them"] == profiles[TEAM_B].name
+
+
+def test_draft_response_falls_back_when_ai_fails(league):
+    fr, profiles, fmt = _setup(league)
+
+    def fail(_context):
+        raise RuntimeError("provider unavailable")
+
+    response = draft_response(
+        fr, fmt, profiles,
+        {"us": TEAM_A, "them": TEAM_B, "first": "us", "actions": []},
+        adviser=fail,
+    )
+
+    assert response["candidates"]
+    assert response["ai_advice"] is None
+    assert response["ai_error"] == "AI analysis unavailable; showing local recommendations."
+
+
+def test_draft_response_limits_strategy_text(league):
+    fr, profiles, fmt = _setup(league)
+
+    with pytest.raises(ValueError, match="strategy"):
+        draft_response(
+            fr, fmt, profiles,
+            {"us": TEAM_A, "them": TEAM_B, "first": "us", "actions": [], "strategy": "x" * 501},
+            adviser=lambda context: context,
+        )
+
+
 @pytest.mark.parametrize("actions, message", [([60, 60], "already picked/banned"), ([999], "unknown hero")])
 def test_draft_response_rejects_illegal_actions(league, actions, message):
     fr, profiles, fmt = _setup(league)
