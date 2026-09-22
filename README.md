@@ -1,16 +1,79 @@
-# dota2-ban-pick-for-TI
+# Dota 2 Ban/Pick Scout
 
-Captain's Mode BP scouting for pro/semi-pro teams. Design: `PLAN.md`; executable task list: `docs/TASKS-phase1-2.md`.
+[![Release](https://img.shields.io/github/v/release/yalerong/dota2-ban-pick-for-TI)](https://github.com/yalerong/dota2-ban-pick-for-TI/releases)
+[![CI](https://github.com/yalerong/dota2-ban-pick-for-TI/actions/workflows/ci.yml/badge.svg)](https://github.com/yalerong/dota2-ban-pick-for-TI/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
-Current state: **Phase 1 (data foundation) + Phase 2 (scouting MVP)** — OpenDota sync, normalized SQLite store, data-inferred draft formats, quality checks, as-of snapshots with a content-hash `data_version`; player/team profiles, signature scores, targeted-ban pressure, draft habits, opponent response edges, evidence-backed Pick/Ban candidates, Markdown scouting report, interactive draft board, blind-test baseline.
+Evidence-backed Captain's Mode scouting for professional and semi-professional Dota 2 teams. The tool builds an OpenDota dataset, profiles teams and players, recommends picks and bans with traceable match evidence, and provides both terminal and browser draft boards.
 
-## Setup
+**Current release: v0.1.0 — scouting MVP.** It includes the Phase 1 data foundation and Phase 2 scouting workflow.
+
+## Features
+
+- Incremental OpenDota sync with resumable raw-data caching.
+- Normalized SQLite data, quality checks, and immutable as-of snapshots.
+- Player hero pools, signature scores, targeted-ban pressure, team draft habits, synergy, counters, and opponent responses.
+- Evidence-backed Pick/Ban candidates and Markdown matchup reports.
+- Interactive terminal and browser draft boards.
+- Ten-hero lineup win-probability model and frozen-snapshot evaluation commands.
+
+> [!IMPORTANT]
+> Recommendations are decision support, not automated draft calls. In the frozen blind test, bans beat the meta-frequency baseline while picks do not yet; review the cited matches, current roster, and patch context before acting on a candidate.
+
+## Requirements
+
+- Python 3.11 or newer.
+- Internet access for OpenDota and dotaconstants synchronization.
+- An optional `OPENDOTA_API_KEY` for higher practical request capacity. Without a key, OpenDota's free-tier limits apply.
+
+## Install v0.1.0
+
+Install the wheel attached to the GitHub release:
 
 ```bash
-pip install -e .[dev]      # or: pip install requests pandas pyyaml pytest
-cp .env.example .env       # OPENDOTA_API_KEY optional (free tier: 60/min, 3000/day)
-pytest -q
+python -m pip install https://github.com/yalerong/dota2-ban-pick-for-TI/releases/download/v0.1.0/dota2_bp-0.1.0-py3-none-any.whl
+bp --help
 ```
+
+To work from source instead:
+
+```bash
+git clone https://github.com/yalerong/dota2-ban-pick-for-TI.git
+cd dota2-ban-pick-for-TI
+python -m pip install -e .
+```
+
+The API key is optional. Set it in your shell before synchronization if you have one:
+
+```bash
+# macOS / Linux
+export OPENDOTA_API_KEY="your-key"
+
+# Windows PowerShell
+$env:OPENDOTA_API_KEY="your-key"
+```
+
+## Quick start
+
+```bash
+bp constants
+bp update --since 2026-03-24 --limit 1500
+bp teams --q spirit
+bp report --us "Team Spirit" --them "Team Liquid"
+bp h5 --matchup "Team Spirit|Team Liquid" --serve
+```
+
+The first synchronization can take time because match details are downloaded within the OpenDota request budget. Later runs are incremental and resumable.
+
+## Development
+
+```bash
+python -m pip install -e ".[dev]"
+python -m ruff check src scripts tests
+python -m pytest -q
+```
+
+Design notes live in [`PLAN.md`](PLAN.md); the original Phase 1–2 task breakdown is in [`docs/TASKS-phase1-2.md`](docs/TASKS-phase1-2.md).
 
 ## Pipeline
 
