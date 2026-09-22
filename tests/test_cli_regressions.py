@@ -252,6 +252,43 @@ def test_data_options_work_before_or_after_the_subcommand(monkeypatch, argv, exp
     assert cli.cache.ENABLED is False
 
 
+def test_h5_ai_options_are_parsed(monkeypatch):
+    import bp.__main__ as cli
+
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "cmd_h5",
+        lambda a: seen.update(ai=a.ai, serve=a.serve, model=a.ai_model, base_url=a.ai_base_url),
+    )
+
+    cli.main([
+        "h5", "--serve", "--ai", "--ai-model", "example-model",
+        "--ai-base-url", "https://llm.example/v1",
+    ])
+
+    assert seen == {
+        "ai": True,
+        "serve": True,
+        "model": "example-model",
+        "base_url": "https://llm.example/v1",
+    }
+
+
+def test_h5_ai_requires_local_server():
+    import bp.__main__ as cli
+
+    with pytest.raises(SystemExit, match="--ai requires --serve"):
+        cli.main(["h5", "--ai"])
+
+
+def test_h5_ai_rejects_non_loopback_bind():
+    import bp.__main__ as cli
+
+    with pytest.raises(SystemExit, match="only serves on a loopback"):
+        cli.main(["h5", "--serve", "--ai", "--host", "0.0.0.0"])
+
+
 @pytest.mark.parametrize(
     "context, overrides, expected_matches, expected_weight",
     [

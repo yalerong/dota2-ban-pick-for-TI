@@ -43,6 +43,7 @@ def draft_response(
     fmt: tuple[tuple[int, int], ...],
     profiles: Mapping[int, TeamProfile],
     payload: Mapping[str, Any],
+    adviser: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Replay browser actions, then score the next step with ``recommend.candidates``."""
     try:
@@ -68,6 +69,10 @@ def draft_response(
     k = payload.get("k", fr.cfg["evidence"]["top_k"])
     if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 20:
         raise ValueError("k must be an integer from 1 to 20")
+    strategy = payload.get("strategy", "")
+    if not isinstance(strategy, str) or len(strategy) > 500:
+        raise ValueError("strategy must be a string of at most 500 characters")
+    strategy = strategy.strip()
 
     state = DraftState(fmt, frozenset(fr.heroes))
     for hero_id in hero_ids:
@@ -92,13 +97,39 @@ def draft_response(
             (profiles[us_id], profiles[them_id]) if first == "us" else (profiles[them_id], profiles[us_id])
         )
         ranked = candidates(fr, state, first_profile, second_profile, k=k)
+    candidate_rows = [asdict(candidate) for candidate in ranked]
+    ai_advice = None
+    ai_error = None
+    if adviser is not None and candidate_rows:
+        named_board = {
+            side: {kind: [fr.hero(hero_id) for hero_id in hero_ids] for kind, hero_ids in values.items()}
+            for side, values in board.items()
+        }
+        context = {
+            "us": profiles[us_id].name,
+            "them": profiles[them_id].name,
+            "first": first,
+            "step": state.step,
+            "total": len(fmt),
+            "action": next_action["action"],
+            "strategy": strategy,
+            "state": named_board,
+            "candidates": candidate_rows,
+        }
+        try:
+            ai_advice = adviser(context)
+        except Exception as exc:  # provider failures must never hide the deterministic recommendation
+            log.warning("AI analysis unavailable: %s", exc)
+            ai_error = "AI analysis unavailable; showing local recommendations."
     return {
         "step": state.step,
         "total": len(fmt),
         "done": state.done,
         "next": next_action,
         "state": board,
-        "candidates": [asdict(candidate) for candidate in ranked],
+        "candidates": candidate_rows,
+        "ai_advice": ai_advice,
+        "ai_error": ai_error,
     }
 
 

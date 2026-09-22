@@ -206,6 +206,12 @@ def cmd_report(a):
 
 def cmd_h5(a):
     """Single-file mobile page, optionally backed by the authoritative local recommender."""
+    if a.ai and not a.serve:
+        sys.exit("h5 --ai requires --serve")
+    if a.ai:
+        from .ai import is_loopback_host
+        if not is_loopback_host(a.host):
+            sys.exit("h5 --ai only serves on a loopback host; remove --host or use 127.0.0.1/localhost/::1")
     from .report import build_report
     from .h5 import _team_payload, ladder_payload, matchup_payload, render
     con = _con(a)
@@ -243,9 +249,19 @@ def cmd_h5(a):
         if len(profiles) < 2:
             sys.exit('h5 --serve needs at least two teams: repeat --team or give --matchup "Us|Them"')
         from .web import draft_response, serve
+        adviser = None
+        if a.ai:
+            from .ai import AIConfig, OpenAICompatibleAdvisor
+            try:
+                ai_config = AIConfig.from_env(base_url=a.ai_base_url, model=a.ai_model)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
+            adviser = OpenAICompatibleAdvisor(ai_config)
+            meta["ai_adviser"] = True
+            meta["ai_model"] = ai_config.model
         meta["draft_api"] = "/api/recommend"
         html = render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta, team_payloads)
-        serve(html, lambda payload: draft_response(fr, fmt, profiles, payload), a.host, a.port, not a.no_open)
+        serve(html, lambda payload: draft_response(fr, fmt, profiles, payload, adviser=adviser), a.host, a.port, not a.no_open)
         return
     out = Path(a.out) if a.out else CONFIG.root / "h5" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -485,6 +501,9 @@ def main(argv=None):
     s.add_argument("--patch"); s.add_argument("--as-of", help="YYYY-MM-DD"); s.add_argument("--out", help="default h5/index.html")
     s.add_argument("--no-icons", action="store_true", help="skip hero icon download (offline); cached icons are still embedded")
     s.add_argument("--serve", action="store_true", help="serve H5 with the authoritative Python recommendation API")
+    s.add_argument("--ai", action="store_true", help="add optional AI tactical analysis to local candidates (requires --serve)")
+    s.add_argument("--ai-model", help="OpenAI-compatible model (default AI_MODEL)")
+    s.add_argument("--ai-base-url", help="OpenAI-compatible API base ending in /v1 (default AI_BASE_URL or OpenAI)")
     s.add_argument("--host", default="127.0.0.1", help="bind address for --serve (default 127.0.0.1)")
     s.add_argument("--port", type=int, default=8000, help="port for --serve (default 8000)")
     s.add_argument("--no-open", action="store_true", help="do not open a browser for --serve")
