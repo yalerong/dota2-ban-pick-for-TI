@@ -248,20 +248,25 @@ def cmd_h5(a):
             sys.exit(f"cannot serve Draft Board without a draft format for patch {patch}")
         if len(profiles) < 2:
             sys.exit('h5 --serve needs at least two teams: repeat --team or give --matchup "Us|Them"')
-        from .web import draft_response, serve
+        from .web import ai_response, draft_response, serve
         adviser = None
+        api_token = None
         if a.ai:
+            import secrets
             from .ai import AIConfig, OpenAICompatibleAdvisor
             try:
                 ai_config = AIConfig.from_env(base_url=a.ai_base_url, model=a.ai_model)
             except ValueError as exc:
                 raise SystemExit(str(exc)) from exc
             adviser = OpenAICompatibleAdvisor(ai_config)
-            meta["ai_adviser"] = True
+            api_token = secrets.token_urlsafe(32)
             meta["ai_model"] = ai_config.model
+            meta["ai_api"] = "/api/ai"
         meta["draft_api"] = "/api/recommend"
         html = render(ladder_payload(fr, con, fmt, download_icons=not a.no_icons), matchups, meta, team_payloads)
-        serve(html, lambda payload: draft_response(fr, fmt, profiles, payload, adviser=adviser), a.host, a.port, not a.no_open)
+        local_scorer = lambda payload: draft_response(fr, fmt, profiles, payload)
+        ai_scorer = (lambda payload: ai_response(fr, fmt, profiles, payload, adviser)) if adviser else None
+        serve(html, local_scorer, a.host, a.port, not a.no_open, ai_scorer=ai_scorer, api_token=api_token)
         return
     out = Path(a.out) if a.out else CONFIG.root / "h5" / "index.html"
     out.parent.mkdir(parents=True, exist_ok=True)
