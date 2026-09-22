@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import ipaddress
 import json
 import os
+import threading
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -31,7 +32,7 @@ class AIConfig:
     api_key: str = field(repr=False)
     base_url: str
     model: str
-    timeout: float = 20.0
+    timeout: float = 15.0
 
     @classmethod
     def from_env(cls, *, base_url: str | None = None, model: str | None = None) -> AIConfig:
@@ -100,6 +101,7 @@ class OpenAICompatibleAdvisor:
 
     def __init__(self, config: AIConfig):
         self.config = config
+        self._lock = threading.Lock()
 
     def __call__(self, context: Mapping[str, Any]) -> dict[str, Any]:
         candidates = context.get("candidates")
@@ -112,23 +114,27 @@ class OpenAICompatibleAdvisor:
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)},
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
         }
+        if not self._lock.acquire(blocking=False):
+            raise AIAdviceError("AI analysis is already in progress")
         try:
-            response = requests.post(
-                f"{self.config.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=self.config.timeout,
-                allow_redirects=False,
-            )
-        except requests.RequestException as exc:
-            raise AIAdviceError("AI request failed") from exc
-        if not 200 <= response.status_code < 300:
-            raise AIAdviceError(f"AI API returned HTTP {response.status_code}")
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-            value = json.loads(content)
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise AIAdviceError("AI API returned an invalid response") from exc
-        return _validated_advice(value, candidates)
+            try:
+                response = requests.post(
+                    f"{self.config.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=(5.0, self.config.timeout),
+                    allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                raise AIAdviceError("AI request failed") from exc
+            if not 200 <= response.status_code < 300:
+                raise AIAdviceError(f"AI API returned HTTP {response.status_code}")
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+                value = json.loads(content)
+            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise AIAdviceError("AI API returned an invalid response") from exc
+            return _validated_advice(value, candidates)
+        finally:
+            self._lock.release()

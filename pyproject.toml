@@ -1,6 +1,6 @@
 [project]
 name = "dota2-bp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dota 2 Captain's Mode BP scouting - data foundation"
 requires-python = ">=3.11"
 dependencies = ["requests>=2.31", "pandas>=2.0", "numpy>=1.26", "pyyaml>=6.0"]

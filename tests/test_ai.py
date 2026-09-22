@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 
 import pytest
 
@@ -89,6 +91,8 @@ def test_advisor_requests_json_and_validates_candidate_names(monkeypatch):
     assert seen["headers"]["Authorization"] == "Bearer secret"
     assert seen["payload"]["response_format"] == {"type": "json_object"}
     assert seen["payload"]["model"] == "example-model"
+    assert "temperature" not in seen["payload"]
+    assert seen["timeout"] == (5.0, 15.0)
     assert seen["allow_redirects"] is False
     assert "secret" not in json.dumps(seen["payload"])
 
@@ -111,3 +115,35 @@ def test_advisor_rejects_hero_outside_local_candidates(monkeypatch):
 
     with pytest.raises(AIAdviceError, match="local candidate"):
         advisor(_context())
+
+
+def test_advisor_rejects_overlapping_paid_calls(monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": json.dumps({
+                "recommended_hero": "Axe",
+                "reasons": ["local evidence"],
+                "risks": [],
+                "alternatives": ["Mars"],
+            })}}]}
+
+    def slow_post(*args, **kwargs):
+        started.set()
+        assert release.wait(2)
+        return Response()
+
+    monkeypatch.setattr("bp.ai.requests.post", slow_post)
+    advisor = OpenAICompatibleAdvisor(AIConfig("secret", "https://llm.example/v1", "example-model"))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(advisor, _context())
+        assert started.wait(2)
+        with pytest.raises(AIAdviceError, match="already in progress"):
+            advisor(_context())
+        release.set()
+        assert first.result(timeout=2)["recommended_hero"] == "Axe"

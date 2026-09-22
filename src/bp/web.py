@@ -5,8 +5,10 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import secrets
 import socket
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 import webbrowser
 
 from .draft_state import DraftState
@@ -43,7 +45,6 @@ def draft_response(
     fmt: tuple[tuple[int, int], ...],
     profiles: Mapping[int, TeamProfile],
     payload: Mapping[str, Any],
-    adviser: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Replay browser actions, then score the next step with ``recommend.candidates``."""
     try:
@@ -69,11 +70,6 @@ def draft_response(
     k = payload.get("k", fr.cfg["evidence"]["top_k"])
     if not isinstance(k, int) or isinstance(k, bool) or not 1 <= k <= 20:
         raise ValueError("k must be an integer from 1 to 20")
-    strategy = payload.get("strategy", "")
-    if not isinstance(strategy, str) or len(strategy) > 500:
-        raise ValueError("strategy must be a string of at most 500 characters")
-    strategy = strategy.strip()
-
     state = DraftState(fmt, frozenset(fr.heroes))
     for hero_id in hero_ids:
         state.apply(hero_id)
@@ -97,43 +93,60 @@ def draft_response(
             (profiles[us_id], profiles[them_id]) if first == "us" else (profiles[them_id], profiles[us_id])
         )
         ranked = candidates(fr, state, first_profile, second_profile, k=k)
-    candidate_rows = [asdict(candidate) for candidate in ranked]
-    ai_advice = None
-    ai_error = None
-    if adviser is not None and candidate_rows:
-        named_board = {
-            side: {kind: [fr.hero(hero_id) for hero_id in hero_ids] for kind, hero_ids in values.items()}
-            for side, values in board.items()
-        }
-        context = {
-            "us": profiles[us_id].name,
-            "them": profiles[them_id].name,
-            "first": first,
-            "step": state.step,
-            "total": len(fmt),
-            "action": next_action["action"],
-            "strategy": strategy,
-            "state": named_board,
-            "candidates": candidate_rows,
-        }
-        try:
-            ai_advice = adviser(context)
-        except Exception as exc:  # provider failures must never hide the deterministic recommendation
-            log.warning("AI analysis unavailable: %s", exc)
-            ai_error = "AI analysis unavailable; showing local recommendations."
     return {
         "step": state.step,
         "total": len(fmt),
         "done": state.done,
         "next": next_action,
         "state": board,
-        "candidates": candidate_rows,
-        "ai_advice": ai_advice,
-        "ai_error": ai_error,
+        "candidates": [asdict(candidate) for candidate in ranked],
     }
 
 
-def _handler(html: str, scorer: Callable[[Mapping[str, Any]], dict[str, Any]]):
+def ai_response(
+    fr: Frames,
+    fmt: tuple[tuple[int, int], ...],
+    profiles: Mapping[int, TeamProfile],
+    payload: Mapping[str, Any],
+    adviser: Callable[[Mapping[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    """Interpret local candidates without delaying the authoritative response."""
+    local = draft_response(fr, fmt, profiles, payload)
+    strategy = payload.get("strategy", "")
+    if not isinstance(strategy, str) or len(strategy) > 500:
+        raise ValueError("strategy must be a string of at most 500 characters")
+    candidates = local["candidates"]
+    if not candidates:
+        return {"ai_advice": None, "ai_error": None}
+    us_id, them_id = int(payload["us"]), int(payload["them"])
+    named_board = {
+        side: {kind: [fr.hero(hero_id) for hero_id in hero_ids] for kind, hero_ids in values.items()}
+        for side, values in local["state"].items()
+    }
+    context = {
+        "us": profiles[us_id].name,
+        "them": profiles[them_id].name,
+        "first": payload.get("first", "us"),
+        "step": local["step"],
+        "total": local["total"],
+        "action": local["next"]["action"],
+        "strategy": strategy.strip(),
+        "state": named_board,
+        "candidates": candidates,
+    }
+    try:
+        return {"ai_advice": adviser(context), "ai_error": None}
+    except Exception as exc:  # provider failures must never hide the deterministic recommendation
+        log.warning("AI analysis unavailable: %s", exc)
+        return {"ai_advice": None, "ai_error": "AI analysis unavailable; local recommendations remain active."}
+
+
+def _handler(
+    html: str,
+    scorer: Callable[[Mapping[str, Any]], dict[str, Any]],
+    ai_scorer: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+    api_token: str | None = None,
+):
     page = html.encode("utf-8")
 
     class Handler(BaseHTTPRequestHandler):
@@ -159,7 +172,16 @@ def _handler(html: str, scorer: Callable[[Mapping[str, Any]], dict[str, Any]]):
                 self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-            if self.path.split("?", 1)[0] != "/api/recommend":
+            path = self.path.split("?", 1)[0]
+            if path == "/api/recommend":
+                target = scorer
+            elif path == "/api/ai" and ai_scorer is not None:
+                supplied = self.headers.get("X-BP-Token", "")
+                if not api_token or not secrets.compare_digest(supplied, api_token):
+                    self._send_json(403, {"error": "forbidden"})
+                    return
+                target = ai_scorer
+            else:
                 self._send_json(404, {"error": "not found"})
                 return
             try:
@@ -169,7 +191,7 @@ def _handler(html: str, scorer: Callable[[Mapping[str, Any]], dict[str, Any]]):
                 payload = json.loads(self.rfile.read(length))
                 if not isinstance(payload, dict):
                     raise ValueError("request body must be a JSON object")
-                self._send_json(200, scorer(payload))
+                self._send_json(200, target(payload))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 self._send_json(400, {"error": str(exc)})
 
@@ -185,15 +207,18 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8000,
     open_browser: bool = True,
+    ai_scorer: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+    api_token: str | None = None,
 ) -> None:
     """Serve the H5 page and recommendation API until interrupted."""
-    server = _server_class(host)((host, port), _handler(html, scorer))
+    server = _server_class(host)((host, port), _handler(html, scorer, ai_scorer, api_token))
     url, phone_url = _display_urls(host, server.server_port)
-    print(f"BP web: {url} (Ctrl+C to stop)")
+    browser_url = f"{url}#token={quote(api_token)}" if api_token else url
+    print(f"BP web: {browser_url} (Ctrl+C to stop)")
     if phone_url:
         print(f"Phone on the same Wi-Fi: {phone_url}")
     if open_browser:
-        webbrowser.open(url)
+        webbrowser.open(browser_url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
